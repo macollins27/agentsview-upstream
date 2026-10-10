@@ -779,6 +779,22 @@ func TestDirectBackend_Sync_ManualIDUsesStoredPath(t *testing.T) {
 		require.NotNil(t, detail)
 		assert.Equal(t, &message, detail.FirstMessage)
 	}
+	require.NoError(t, d.DeleteSession(t.Context(), "remote~"+session.ID))
+	require.NoError(t, d.EnableArchiveOnly(t.Context()))
+	blocked := sync.NewEngine(t.Context(), d, sync.EngineConfig{})
+	t.Cleanup(blocked.Close)
+	blockedSvc := service.NewDirectBackend(d, blocked)
+	require.ErrorIs(t, d.RequireSourceSync(t.Context()), db.ErrArchiveOnly)
+	stored, err := blockedSvc.Get(t.Context(), session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	for _, in := range []service.SyncInput{{ID: session.ID}, {Path: path}} {
+		detail, err := blockedSvc.Sync(t.Context(), in)
+		require.NoError(t, err)
+		require.NotNil(t, detail)
+		assert.Equal(t, stored.ID, detail.ID)
+		assert.Equal(t, stored.FirstMessage, detail.FirstMessage)
+	}
 }
 
 // TestDirectBackend_Sync_AmbiguousPath_ReturnsListedIDs verifies

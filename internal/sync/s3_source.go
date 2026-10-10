@@ -24,6 +24,21 @@ func s3ProviderFor(agent parser.AgentType) (parser.S3Provider, bool) {
 	return lookupS3Provider(agent)
 }
 
+func applyS3DiscoveredSource(file *parser.DiscoveredFile, source parser.SourceRef) {
+	if s3, ok := source.Opaque.(parser.S3DiscoveredSource); ok {
+		file.Machine = s3.Machine
+		file.SourceSize = s3.Size
+		file.SourceMtime = s3.MtimeNS
+		file.SourceFingerprint = s3.Fingerprint
+		file.TranscriptSize = s3.TranscriptSize
+		file.TranscriptMtime = s3.TranscriptMtimeNS
+		file.ProviderProcess = false
+		if file.Project == "" {
+			file.Project = s3.Project
+		}
+	}
+}
+
 func s3SourceFileInfo(file parser.DiscoveredFile) (os.FileInfo, error) {
 	size := file.SourceSize
 	mtime := file.SourceMtime

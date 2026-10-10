@@ -26,8 +26,8 @@ func (e *Engine) TrySyncSessionWithSubagentsContext(ctx context.Context, session
 	return e.syncSessionWithSubagentsContext(ctx, sessionID, true)
 }
 
-func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID string, foreground bool) error {
-	parentErr := e.syncSingleSessionContext(ctx, sessionID, foreground)
+func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID string, foreground bool, selected ...parser.DiscoveredFile) error {
+	parentErr := e.syncSingleSessionContext(ctx, sessionID, foreground, selected...)
 	if errors.Is(parentErr, ErrSyncInProgress) {
 		return parentErr
 	}

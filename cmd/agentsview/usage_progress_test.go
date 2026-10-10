@@ -282,7 +282,7 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 					close(manualDone)
 				}()
 			}
-			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}, agentDirs: cfg.AgentDirs}
+			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}
 			var out *sessionUsageOutput
 			var code int
 			var err error
@@ -431,4 +431,107 @@ func TestUsageProgressPrintsSlowWorkToStderr(t *testing.T) {
 		synctest.Wait()
 		assert.Contains(t, output.String(), "(6s)", "long preparation must keep reporting its elapsed time")
 	})
+}
+
+func TestDaemonSessionUsageImportsConfiguredS3Source(t *testing.T) {
+	const rawID = "a1b2c3d4-1111-4222-8333-444455556666"
+	for _, tc := range []struct {
+		id                     string
+		codex, ownOnly, noSync bool
+	}{
+		{"laptop~shared-id", false, false, false}, {"shared-id", false, true, false}, {"desktop~shared-id", false, true, false},
+		{"laptop~shared-id", false, false, true}, {"codex:" + rawID, true, false, false}, {rawID, true, true, false},
+	} {
+		t.Run(fmt.Sprintf("%s/no-sync=%t", tc.id, tc.noSync), func(t *testing.T) {
+			cfg := testConfigWithClaudeFixture(t)
+			agent, provider, filename := parser.AgentClaude, "claude", "shared-id.jsonl"
+			body := testjsonl.NewSessionBuilder().AddClaudeUser("2026-05-04T14:00:00Z", "hello").AddClaudeAssistant("2026-05-04T14:00:01Z", "done").String()
+			if tc.codex {
+				agent, provider, filename = parser.AgentCodex, "codex", "rollout-2026-05-04T14-00-00-"+rawID+".jsonl"
+				body = testjsonl.NewSessionBuilder().AddCodexMeta("2026-05-04T14:00:00Z", rawID, "/repo", "codex").AddCodexMessage("2026-05-04T14:00:01Z", "user", "hello").String()
+			}
+			roots := []string{"s3://bucket/laptop/raw/" + provider, "s3://bucket/desktop/raw/" + provider}
+			cfg.AgentDirs = map[parser.AgentType][]string{agent: roots}
+			objects := map[string]string{}
+			for _, root := range roots {
+				objects[strings.TrimPrefix(root, "s3://bucket/")+"/project/"+filename] = body
+				objects[strings.TrimPrefix(root, "s3://bucket/")+"/project/unrelated.jsonl"] = body
+			}
+			var mu sync.Mutex
+			fetched := []string{}
+			s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Has("location") {
+					fmt.Fprint(w, `<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>`)
+					return
+				}
+				if r.URL.Query().Has("list-type") || r.URL.Query().Has("prefix") {
+					fmt.Fprint(w, `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>bucket</Name><IsTruncated>false</IsTruncated>`)
+					for key, value := range objects {
+						if strings.HasPrefix(key, r.URL.Query().Get("prefix")) {
+							fmt.Fprintf(w, `<Contents><Key>%s</Key><LastModified>2026-05-04T14:00:00Z</LastModified><ETag>"fixture"</ETag><Size>%d</Size></Contents>`, key, len(value))
+						}
+					}
+					fmt.Fprint(w, `</ListBucketResult>`)
+					return
+				}
+				key := strings.TrimPrefix(r.URL.Path, "/bucket/")
+				value, ok := objects[key]
+				if !ok {
+					w.WriteHeader(http.StatusNotFound)
+					fmt.Fprint(w, `<Error><Code>NoSuchKey</Code></Error>`)
+					return
+				}
+				w.Header().Set("Content-Length", fmt.Sprint(len(value)))
+				w.Header().Set("Last-Modified", "Mon, 04 May 2026 14:00:00 GMT")
+				w.Header().Set("ETag", `"fixture"`)
+				if r.Method == http.MethodGet {
+					mu.Lock()
+					fetched = append(fetched, key)
+					mu.Unlock()
+					fmt.Fprint(w, value)
+				}
+			}))
+			t.Cleanup(s3.Close)
+			t.Setenv("AWS_S3_ENDPOINT", s3.URL)
+			t.Setenv("AWS_ACCESS_KEY_ID", "fixture")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "fixture")
+			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
+			t.Cleanup(engine.Close)
+			ts := httptest.NewUnstartedServer(nil)
+			cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
+			srv := server.New(cfg, database, engine, server.WithLocalSyncRunner(func(context.Context, func(agentsync.Progress)) (agentsync.SyncStats, error) {
+				t.Error("usage requested full sync")
+				return agentsync.SyncStats{}, nil
+			}))
+			ts.Config.Handler = srv.Handler()
+			ts.Start()
+			t.Cleanup(ts.Close)
+			out, code, err := (daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}).SessionUsage(t.Context(), sessionUsageQuery{SessionID: tc.id, OwnOnly: tc.ownOnly, NoSync: tc.noSync})
+			require.NoError(t, err)
+			mu.Lock()
+			defer mu.Unlock()
+			if tc.noSync {
+				assert.Equal(t, tokenUseExitNotFound, code)
+				assert.Empty(t, fetched)
+				return
+			}
+			require.NotNil(t, out)
+			machine, _ := parser.StripHostPrefix(out.SessionID)
+			assert.Contains(t, []string{"laptop", "desktop"}, machine)
+			if host, _ := parser.StripHostPrefix(tc.id); host != "" {
+				assert.Equal(t, host, machine)
+			}
+			expected := machine + "~shared-id"
+			if tc.codex {
+				expected = machine + "~codex:" + rawID
+			}
+			assert.Equal(t, expected, out.SessionID)
+			require.NotEmpty(t, fetched)
+			for _, key := range fetched {
+				assert.Equal(t, machine+"/raw/"+provider+"/project/"+filename, key)
+			}
+			assert.False(t, engine.StartupReconciled())
+		})
+	}
 }

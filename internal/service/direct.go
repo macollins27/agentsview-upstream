@@ -539,6 +539,7 @@ func (b *directBackend) Sync(
 
 	syncSingle := b.engine.SyncSingleSessionContext
 	syncCombined := b.engine.SyncSessionWithSubagentsContext
+	importSource := false
 	if in.Foreground && in.ID != "" {
 		archived, err := b.local.GetSession(ctx, in.ID)
 		if err != nil {
@@ -547,16 +548,20 @@ func (b *directBackend) Sync(
 		if archived != nil {
 			syncSingle = b.engine.TrySyncSingleSessionContext
 			syncCombined = b.engine.TrySyncSessionWithSubagentsContext
+		} else {
+			importSource = true
 		}
 	}
 
 	path := in.Path
 	if in.ID != "" {
-		if isVibeSessionID(in.ID) {
+		if isVibeSessionID(in.ID) && !importSource {
 			path = b.engine.FindSourceFile(ctx, in.ID)
 		}
 		var err error
-		if in.Subagents {
+		if importSource {
+			in.ID, path, err = b.engine.ImportSessionContext(ctx, in.ID, in.Subagents)
+		} else if in.Subagents {
 			err = syncCombined(ctx, in.ID)
 		} else if in.Foreground {
 			err = syncSingle(ctx, in.ID)
@@ -569,7 +574,7 @@ func (b *directBackend) Sync(
 			_, _, windsurf := parser.SplitWindsurfVirtualPath(storedPath)
 			if !visualStudio && !windsurf {
 				path = parser.ResolveSourceFilePath(storedPath)
-				err = b.engine.SyncPathsContext(ctx, []string{path})
+				b.engine.SyncPaths([]string{path})
 			} else {
 				err = syncSingle(ctx, in.ID)
 			}
@@ -578,9 +583,7 @@ func (b *directBackend) Sync(
 			return nil, err
 		}
 	} else {
-		if err := b.engine.SyncPathsContext(ctx, []string{path}); err != nil {
-			return nil, err
-		}
+		b.engine.SyncPaths([]string{path})
 		resolved, err := b.resolveSessionIDByPath(ctx, path)
 		if err != nil {
 			return nil, err

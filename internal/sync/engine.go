@@ -8451,18 +8451,7 @@ func (e *Engine) discoverProviderSources(
 			// so clear ProviderProcess for s3:// objects: processProviderFile must
 			// decline them so they route through processS3Session rather than the
 			// provider Fingerprint/Parse path, which cannot read a remote object.
-			if s3, ok := source.Opaque.(parser.S3DiscoveredSource); ok {
-				discovered.Machine = s3.Machine
-				discovered.SourceSize = s3.Size
-				discovered.SourceMtime = s3.MtimeNS
-				discovered.SourceFingerprint = s3.Fingerprint
-				discovered.TranscriptSize = s3.TranscriptSize
-				discovered.TranscriptMtime = s3.TranscriptMtimeNS
-				discovered.ProviderProcess = false
-				if discovered.Project == "" {
-					discovered.Project = s3.Project
-				}
-			}
+			applyS3DiscoveredSource(&discovered, source)
 			files = append(files, discovered)
 		}
 	}
@@ -20151,6 +20140,71 @@ func lastParsedSourceUUID(
 	return ingest.LastParsedSourceUUID(current, msgs)
 }
 
+// ImportSessionContext resolves one configured source and shares the targeted writer.
+func (e *Engine) ImportSessionContext(ctx context.Context, requestedID string, subagents bool) (string, string, error) {
+	if e.sourceSyncErr != nil {
+		return "", "", e.sourceSyncErr
+	}
+	id, file, err := e.findSessionSource(ctx, requestedID)
+	if err != nil {
+		return "", "", err
+	}
+	if subagents {
+		err = e.syncSessionWithSubagentsContext(ctx, id, false, file)
+	} else {
+		err = e.syncSingleSessionContext(ctx, id, false, file)
+	}
+	return id, file.Path, err
+}
+
+func (e *Engine) findSessionSource(ctx context.Context, requestedID string) (string, parser.DiscoveredFile, error) {
+	host, rawID := parser.StripHostPrefix(requestedID)
+	defs := parser.Registry
+	if def, ok := parser.AgentByPrefix(rawID); ok && def.IDPrefix != "" {
+		defs = []parser.AgentDef{def}
+	}
+	for _, def := range defs {
+		if err := ctx.Err(); err != nil {
+			return "", parser.DiscoveredFile{}, err
+		}
+		id := def.IDPrefix + strings.TrimPrefix(rawID, def.IDPrefix)
+		if host == "" {
+			if sourcePath := e.FindSourceFile(ctx, id); sourcePath != "" && !isS3SourcePath(sourcePath) {
+				return id, parser.DiscoveredFile{Path: sourcePath, Agent: def.Type}, nil
+			}
+		}
+		p, ok := s3ProviderFor(def.Type)
+		if !ok {
+			continue
+		}
+		var roots []string
+		for _, root := range e.sources().agentDirs[def.Type] {
+			if isS3SourcePath(root) && (host == "" || s3MachineFromRoot(root) == host) {
+				roots = append(roots, root)
+			}
+		}
+		factory := e.sources().providerFactories[def.Type]
+		if len(roots) == 0 || factory == nil {
+			continue
+		}
+		provider := factory.NewProvider(parser.ProviderConfig{Roots: roots, Machine: e.machine, SourceMachines: e.sources().sourceMachines[def.Type], PathRewriter: e.pathRewriter})
+		sources, err := provider.Discover(e.parsePolicyContext(ctx))
+		if err != nil {
+			return "", parser.DiscoveredFile{}, err
+		}
+		for _, source := range sources {
+			file := parser.DiscoveredFile{Path: providerDiscoveredPath(source), Agent: def.Type, Project: source.ProjectHint}
+			applyS3DiscoveredSource(&file, source)
+			candidateID := s3DiscoveredSessionIDWithProvider(file, p)
+			machine, candidateRaw := parser.StripHostPrefix(candidateID)
+			if (host == "" || machine == host) && candidateRaw == id {
+				return candidateID, file, nil
+			}
+		}
+	}
+	return "", parser.DiscoveredFile{}, fmt.Errorf("source file not found for %s", requestedID)
+}
+
 // FindSourceFile locates the original source file for a
 // session ID. It first checks the stored file_path from the
 // database (handles cases where filename differs from session
@@ -20736,7 +20790,7 @@ func (e *Engine) TrySyncSingleSessionContext(ctx context.Context, sessionID stri
 	return e.syncSingleSessionContext(ctx, sessionID, true)
 }
 
-func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string, foreground bool) (err error) {
+func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string, foreground bool, selected ...parser.DiscoveredFile) (err error) {
 	if e.sourceSyncErr != nil {
 		return e.sourceSyncErr
 	}
@@ -20768,7 +20822,7 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 	e.resetSourceClaims()
 
 	host, _ := parser.StripHostPrefix(sessionID)
-	if host != "" && !isS3SourcePath(e.db.GetSessionFilePath(ctx, sessionID)) {
+	if host != "" && len(selected) == 0 && !isS3SourcePath(e.db.GetSessionFilePath(ctx, sessionID)) {
 		return fmt.Errorf(
 			"cannot sync remote session %s locally", sessionID,
 		)
@@ -20792,7 +20846,12 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 		}
 	}
 
-	path := e.FindSourceFile(ctx, sessionID)
+	path := ""
+	if len(selected) > 0 {
+		path = selected[0].Path
+	} else {
+		path = e.FindSourceFile(ctx, sessionID)
+	}
 	if path == "" {
 		return fmt.Errorf(
 			"source file not found for %s", sessionID,
@@ -20813,6 +20872,10 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 		Agent:      agent,
 		ForceParse: true,
 	}
+	if len(selected) > 0 {
+		file = selected[0]
+		file.ForceParse = true
+	}
 	e.hydrateS3DiscoveredFile(ctx, sessionID, &file)
 	if file.Machine == "" && !isS3SourcePath(file.Path) {
 		file.Machine = e.machineForPath(file.Agent, file.Path)
@@ -20829,7 +20892,7 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 			sess.Project != "" &&
 			!parser.NeedsProjectReparse(sess.Project) {
 			file.Project = sess.Project
-		} else {
+		} else if file.Project == "" {
 			file.Project = filepath.Base(filepath.Dir(path))
 		}
 	case parser.AgentVSCopilot:

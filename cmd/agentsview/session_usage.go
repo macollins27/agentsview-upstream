@@ -108,7 +108,7 @@ func sessionUsageDataForCommand(
 				return nil, tokenUseExitErr, err
 			}
 		}
-		return httpSessionUsageData(ctx, remote, token, query, nil)
+		return httpSessionUsageData(ctx, remote, token, query, false)
 	}
 	cfg, err := config.LoadPFlags(cmd.Flags())
 	if err != nil {
@@ -175,7 +175,7 @@ func httpSessionUsageData(
 	baseURL string,
 	token string,
 	query sessionUsageQuery,
-	agentDirs map[parser.AgentType][]string,
+	allowImport bool,
 ) (*sessionUsageOutput, int, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -186,10 +186,8 @@ func httpSessionUsageData(
 		ctx, backend, sessionID,
 	)
 	sourceOnly := false
-	if errors.Is(err, errSessionNotFound) && !query.NoSync {
-		if sourceID, found := resolveSourceSessionID(agentDirs, sessionID); found {
-			resolvedID, sourceOnly, err = sourceID, true, nil
-		}
+	if errors.Is(err, errSessionNotFound) && !query.NoSync && allowImport {
+		resolvedID, sourceOnly, err = sessionID, true, nil
 	}
 	if err == nil && !query.NoSync {
 		detail, syncErr := backend.Sync(ctx, service.SyncInput{

@@ -95,7 +95,7 @@ func resolveArchiveQueryBackendWithConfig(
 						return nil, nil, fmt.Errorf("waiting for startup sync: %w", err)
 					}
 				}
-				return daemonArchiveQueryBackend{tr: tr, authToken: cfg.AuthToken, agentDirs: cfg.AgentDirs},
+				return daemonArchiveQueryBackend{tr: tr, authToken: cfg.AuthToken},
 					func() {}, nil
 			case policy.ReadOnlyDaemon == archiveQueryRejectReadOnlyDaemon:
 				return nil, nil, readOnlySessionUsageDaemonError(tr.URL)
@@ -197,7 +197,6 @@ func openArchiveQueryDB(
 type daemonArchiveQueryBackend struct {
 	tr        transport
 	authToken string
-	agentDirs map[parser.AgentType][]string
 }
 
 func (b daemonArchiveQueryBackend) ActivityReport(
@@ -224,7 +223,7 @@ func (b daemonArchiveQueryBackend) SessionUsage(
 	ctx context.Context,
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
-	return httpSessionUsageData(ctx, b.tr.URL, b.authToken, query, b.agentDirs)
+	return httpSessionUsageData(ctx, b.tr.URL, b.authToken, query, true)
 }
 
 func (b daemonArchiveQueryBackend) MachineLabels(
