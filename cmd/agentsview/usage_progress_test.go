@@ -46,13 +46,14 @@ func TestUsageCommandsDeferStartupSyncExceptStatusline(t *testing.T) {
 				ts, requests = newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a"})
 			}
 			started := false
+			var statuslineDeadline time.Time
 			stubStartBackgroundServeForTransport(t, func(ctx context.Context, cfg *config.Config, _ time.Duration, _ bool) (*DaemonRuntime, error) {
 				started = true
 				if command == "statusline" {
 					deadline, ok := ctx.Deadline()
 					assert.True(t, ok, "prompt refresh must have a deadline")
 					if ok {
-						assert.InDelta(t, 30, time.Until(deadline).Seconds(), 1)
+						statuslineDeadline = deadline
 					}
 				}
 				assert.Equal(t, command != "statusline", cfg.SkipInitialSync)
@@ -64,7 +65,9 @@ func TestUsageCommandsDeferStartupSyncExceptStatusline(t *testing.T) {
 				case "daily":
 					runUsageDaily(UsageDailyConfig{JSON: true, Timezone: "UTC"})
 				case "statusline":
+					before := time.Now()
 					runUsageStatusline(UsageStatuslineConfig{JSON: true})
+					assert.WithinRange(t, statuslineDeadline, before.Add(30*time.Second), time.Now().Add(30*time.Second))
 				case "session usage":
 					cmd := sessionUsageCommand(t, "session", "usage", "codex:session-a")
 					for range 2 {
