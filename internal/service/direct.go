@@ -537,7 +537,7 @@ func (b *directBackend) Sync(
 		return nil, errors.New("sync: subagents requires id")
 	}
 	if in.Subagents {
-		if err := b.engine.SyncSessionWithSubagentsContext(
+		if err := b.engine.TrySyncSessionWithSubagentsContext(
 			ctx, in.ID,
 		); err != nil {
 			return nil, err
@@ -549,7 +549,7 @@ func (b *directBackend) Sync(
 	if path == "" {
 		storedPath := b.local.GetSessionFilePath(ctx, in.ID)
 		if storedPath == "" {
-			if err := b.engine.SyncSingleSessionContext(ctx, in.ID); err != nil {
+			if err := b.engine.TrySyncSingleSessionContext(ctx, in.ID); err != nil {
 				return nil, err
 			}
 			return b.Get(ctx, in.ID)
@@ -562,7 +562,7 @@ func (b *directBackend) Sync(
 		// conversation lives on in a sibling. The single-session path keeps the
 		// conversation scope and follows it across sibling trace files.
 		if _, _, ok := parser.SplitVisualStudioCopilotVirtualPath(storedPath); ok {
-			if err := b.engine.SyncSingleSessionContext(
+			if err := b.engine.TrySyncSingleSessionContext(
 				ctx, in.ID,
 			); err != nil {
 				return nil, err
@@ -570,7 +570,7 @@ func (b *directBackend) Sync(
 			return b.Get(ctx, in.ID)
 		}
 		if _, _, ok := parser.SplitWindsurfVirtualPath(storedPath); ok {
-			if err := b.engine.SyncSingleSessionContext(
+			if err := b.engine.TrySyncSingleSessionContext(
 				ctx, in.ID,
 			); err != nil {
 				return nil, err
@@ -580,7 +580,9 @@ func (b *directBackend) Sync(
 		path = parser.ResolveSourceFilePath(storedPath)
 	}
 
-	b.engine.SyncPaths([]string{path})
+	if err := b.engine.TrySyncPathsContext(ctx, []string{path}); err != nil {
+		return nil, err
+	}
 
 	id := in.ID
 	if id == "" {

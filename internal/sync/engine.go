@@ -1938,16 +1938,32 @@ func (e *Engine) parsePolicyContext(ctx context.Context) context.Context {
 
 // file watcher threads the serve shutdown context through here.
 func (e *Engine) SyncPathsContext(ctx context.Context, paths []string) error {
-	return e.syncPathsContext(ctx, paths, false)
+	return e.syncPathsContext(ctx, paths, false, false)
 }
 
 // ReparsePathsContext fully parses only the selected sources, retaining the
 // normal publication rules and bounded-memory staging for large Codex files.
 func (e *Engine) ReparsePathsContext(ctx context.Context, paths []string) error {
-	return e.syncPathsContext(ctx, paths, true)
+	return e.syncPathsContext(ctx, paths, true, false)
 }
 
-func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force bool) error {
+// TrySyncPathsContext refreshes selected sources only when the writer is available.
+func (e *Engine) TrySyncPathsContext(ctx context.Context, paths []string) error {
+	return e.syncPathsContext(ctx, paths, false, true)
+}
+
+func (e *Engine) lockTargetedSync(foreground bool) error {
+	if foreground {
+		if !e.syncMu.TryLock() {
+			return ErrSyncInProgress
+		}
+	} else {
+		e.syncMu.Lock()
+	}
+	return nil
+}
+
+func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force, foreground bool) error {
 	if e.sourceSyncErr != nil {
 		return e.sourceSyncErr
 	}
@@ -1956,7 +1972,9 @@ func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force boo
 	}
 	ctx = e.parsePolicyContext(ctx)
 	stats, tombstoned, err := func() (SyncStats, int, error) {
-		e.syncMu.Lock()
+		if err := e.lockTargetedSync(foreground); err != nil {
+			return SyncStats{}, 0, err
+		}
 		defer e.syncMu.Unlock()
 		defer e.clearCurrentProgress()
 		previous := e.forceFullParse
@@ -20715,6 +20733,15 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 func (e *Engine) SyncSingleSessionContext(
 	ctx context.Context, sessionID string,
 ) (err error) {
+	return e.syncSingleSessionContext(ctx, sessionID, false)
+}
+
+// TrySyncSingleSessionContext refreshes one session only when the writer is available.
+func (e *Engine) TrySyncSingleSessionContext(ctx context.Context, sessionID string) error {
+	return e.syncSingleSessionContext(ctx, sessionID, true)
+}
+
+func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string, foreground bool) (err error) {
 	if e.sourceSyncErr != nil {
 		return e.sourceSyncErr
 	}
@@ -20725,7 +20752,9 @@ func (e *Engine) SyncSingleSessionContext(
 		)
 	}
 	ctx = e.parsePolicyContext(ctx)
-	e.syncMu.Lock()
+	if err := e.lockTargetedSync(foreground); err != nil {
+		return err
+	}
 	preserved := false
 	sessionsChanged := false
 	// Defers run LIFO: unlock runs first (releasing syncMu), then

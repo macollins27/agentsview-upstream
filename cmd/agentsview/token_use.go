@@ -93,6 +93,9 @@ func resolveRawSessionID(
 }
 
 func resolveSourceSessionID(agentDirs map[parser.AgentType][]string, input string) (string, bool) {
+	if host, _ := parser.StripHostPrefix(input); host != "" {
+		return input, false
+	}
 	// Canonical disk probe: if the input starts with a known
 	// agent prefix, trust that interpretation first and strip
 	// before resolving the source (which rejects IDs with

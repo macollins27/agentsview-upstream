@@ -1798,17 +1798,13 @@ func TestCanceledForegroundSyncLeavesStartupFallbackEligible(t *testing.T) {
 		"a canceled HTTP sync must leave daemon startup recovery eligible")
 }
 
-func TestHumaSyncSessionLocalNoSyncResyncsStaleDB(t *testing.T) {
+func TestHumaSyncSessionLocalNoSyncRejectsStaleDB(t *testing.T) {
 	f := newSyncRouteFixture(t, withStaleDB())
-	sessionPath := f.writeClaudeSession(t, "proj/session.jsonl",
-		"stale session sync route")
-	require.True(t, f.db.NeedsResync())
+	sessionPath := f.writeClaudeSession(t, "proj/session.jsonl", "stale session sync route")
 	w := postSessionSync(t, f.handler, sessionPath)
-
-	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-	assert.False(t, f.db.NeedsResync())
-	detail := decodeRecorder[service.SessionDetail](t, w)
-	assertFirstMessageContains(t, detail.FirstMessage, "stale session sync route")
+	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
+	assert.True(t, f.db.NeedsResync())
+	assert.Contains(t, w.Body.String(), "agentsview resync")
 }
 
 func TestHumaSyncSessionCanceledPreResyncReturnsNil(t *testing.T) {

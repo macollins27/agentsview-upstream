@@ -18,7 +18,19 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 	ctx context.Context,
 	sessionID string,
 ) error {
-	parentErr := e.SyncSingleSessionContext(ctx, sessionID)
+	return e.syncSessionWithSubagentsContext(ctx, sessionID, false)
+}
+
+// TrySyncSessionWithSubagentsContext tries the writer for each requested source batch.
+func (e *Engine) TrySyncSessionWithSubagentsContext(ctx context.Context, sessionID string) error {
+	return e.syncSessionWithSubagentsContext(ctx, sessionID, true)
+}
+
+func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID string, foreground bool) error {
+	parentErr := e.syncSingleSessionContext(ctx, sessionID, foreground)
+	if errors.Is(parentErr, ErrSyncInProgress) {
+		return parentErr
+	}
 
 	// The archive session ID carries its agent prefix (host prefixes are
 	// stripped first), so the parent agent resolves without a row lookup and
@@ -38,10 +50,10 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 
 	var subagentErr error
 	if strings.HasPrefix(sourcePath, "s3://") {
-		subagentErr = e.SyncS3SubagentTranscriptsContext(
-			ctx, sessionID, parentAgent, paths)
+		subagentErr = e.syncS3SubagentTranscriptsContext(
+			ctx, sessionID, parentAgent, paths, foreground)
 	} else {
-		subagentErr = e.SyncPathsContext(ctx, paths)
+		subagentErr = e.syncPathsContext(ctx, paths, false, foreground)
 	}
 	return errors.Join(parentErr, subagentErr)
 }

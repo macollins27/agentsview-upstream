@@ -976,7 +976,7 @@ can continue in the daemon.
 
 Restart older daemons after upgrading so they provide the usage progress
 endpoint. `session usage` and `token-use` refresh the named session and its
-subagents without waiting for initial sync. `usage statusline` waits for initial
+subagents without requesting initial sync. `usage statusline` waits for initial
 sync, including when it reuses a daemon started by daily usage, and limits the
 complete wait and report request to 30 seconds.
 
@@ -1711,8 +1711,9 @@ agentsview session usage <id> --own-only # exclude subagent transcripts
 spawned it, so a parent that delegated most of its work still reports the full
 cost. `--own-only` restores the older own-session output.
 
-While a worker-backed daemon needs an archive rebuild, session sync requests
-return HTTP 409. Run `agentsview resync` to rebuild before retrying.
+Session sync requests return HTTP 409 while another sync owns the writer or the
+archive needs a rebuild. Run `agentsview resync` when a rebuild is required.
+Syncing an ID absent from the archive imports its local source when available.
 
 `session search` supports substring (default), `--regex`, `--fts`, `--semantic`,
 and `--hybrid` modes. Repeatable `--exclude-session <id>` drops matches from
