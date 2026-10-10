@@ -3,6 +3,7 @@
  */
 
 export interface ServiceSyncInput {
+  foreground?: boolean;
   id?: string;
   path?: string;
   subagents?: boolean;

@@ -22,6 +22,8 @@ import (
 	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/servicehttp"
 	agentsync "go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/testjsonl"
 )
@@ -145,15 +147,16 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 	const rawID = "a1b2c3d4-1111-4222-8333-444455556666"
 	for _, tc := range []struct {
-		id       string
-		ownOnly  bool
-		noSync   bool
-		freebuff bool
-		archived bool
-		stale    bool
-		noRunner bool
-		busy     bool
-		vibe     int
+		id         string
+		ownOnly    bool
+		noSync     bool
+		freebuff   bool
+		archived   bool
+		stale      bool
+		noRunner   bool
+		busy       bool
+		vibe       int
+		unarchived bool
 	}{
 		{id: "codex:" + rawID, stale: true, noRunner: true},
 		{id: "codex:" + rawID, stale: true, archived: true, noRunner: true},
@@ -164,6 +167,10 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 		{id: "codex:" + rawID, stale: true, archived: true},
 		{id: "vibe:session_20260616_083518_abc123", ownOnly: true, vibe: 1},
 		{id: "vibe:abc123def-0000-0000-0000-000000000000", ownOnly: true, vibe: 2},
+		{id: "vibe:session_20260616_083518_abc123", vibe: 1},
+		{id: "vibe:abc123def-0000-0000-0000-000000000000", vibe: 2},
+		{id: "vibe:session_20260616_083518_abc123", vibe: 1, unarchived: true},
+		{id: "vibe:session_20260616_083518_abc123", vibe: 1, ownOnly: true, unarchived: true},
 		{id: rawID},
 		{id: "codex:" + rawID},
 		{id: rawID, ownOnly: true},
@@ -210,7 +217,9 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 			})
 			t.Cleanup(engine.Close)
 			if tc.vibe != 0 {
-				require.NoError(t, engine.SyncPathsContext(t.Context(), []string{vibePath}))
+				if !tc.unarchived {
+					require.NoError(t, engine.SyncPathsContext(t.Context(), []string{vibePath}))
+				}
 				if tc.vibe == 1 {
 					require.NoError(t, os.WriteFile(metaPath, []byte(`{"session_id":"abc123def-0000-0000-0000-000000000000"}`), 0o644))
 					expectedID = "vibe:abc123def-0000-0000-0000-000000000000"
@@ -250,12 +259,21 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 					}))
 				}
 			}
+			var manualDone chan struct{}
+			var manualErr error
 			if tc.busy {
 				entered, release := make(chan struct{}), make(chan struct{})
 				done := make(chan error, 1)
 				go func() { done <- engine.RunExclusive(func() error { close(entered); <-release; return nil }) }()
 				<-entered
-				defer func() { close(release); require.NoError(t, <-done) }()
+				defer func() {
+					close(release)
+					require.NoError(t, <-done)
+					if manualDone != nil {
+						<-manualDone
+						require.NoError(t, manualErr)
+					}
+				}()
 			}
 			ts := httptest.NewUnstartedServer(nil)
 			cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
@@ -263,6 +281,13 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 			ts.Config.Handler = srv.Handler()
 			ts.Start()
 			t.Cleanup(ts.Close)
+			if tc.busy && tc.archived && tc.ownOnly {
+				manualDone = make(chan struct{})
+				go func() {
+					_, manualErr = servicehttp.NewHTTPBackend(ts.URL, "", false, "").Sync(t.Context(), service.SyncInput{ID: expectedID})
+					close(manualDone)
+				}()
+			}
 			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}, agentDirs: cfg.AgentDirs}
 			var out *sessionUsageOutput
 			var code int
@@ -279,6 +304,16 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 					t.Fatal("usage waited for an unrelated sync")
 				}
 			})
+			if manualDone != nil {
+				assert.Never(t, func() bool {
+					select {
+					case <-manualDone:
+						return true
+					default:
+						return false
+					}
+				}, 100*time.Millisecond, 10*time.Millisecond, "manual sync must wait for the writer")
+			}
 			if (tc.stale || tc.busy) && !tc.archived {
 				if tc.stale {
 					require.ErrorContains(t, err, "agentsview resync")

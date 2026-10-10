@@ -1,6 +1,7 @@
 package servicehttp
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -12,6 +13,20 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/service"
 )
+
+func TestHTTPBackendSyncRejectsNullSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), "foreground")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("null"))
+	}))
+	t.Cleanup(srv.Close)
+	detail, err := NewHTTPBackend(srv.URL, "", false, "").Sync(t.Context(), service.SyncInput{ID: "session-a"})
+	require.ErrorContains(t, err, "no session detail")
+	assert.Nil(t, detail)
+}
 
 func TestNewHTTPBackendUsesLongRunningClient(t *testing.T) {
 	t.Parallel()

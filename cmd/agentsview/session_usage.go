@@ -190,7 +190,7 @@ func httpSessionUsageData(
 	}
 	if err == nil && !query.NoSync {
 		detail, syncErr := backend.Sync(ctx, service.SyncInput{
-			ID: resolvedID, Subagents: !query.OwnOnly,
+			ID: resolvedID, Subagents: !query.OwnOnly, Foreground: true,
 		})
 		if syncErr != nil {
 			if sourceOnly {

@@ -1596,7 +1596,7 @@ func TestHumaTriggerSyncWorkerBackedRejectsStaleArchive(t *testing.T) {
 			}))
 			require.True(t, f.db.NeedsResync())
 
-			w := serveJSON(t, f.handler, http.MethodPost, path, service.SyncInput{ID: "session-a", Subagents: true})
+			w := serveJSON(t, f.handler, http.MethodPost, path, service.SyncInput{ID: "session-a", Subagents: true, Foreground: true})
 
 			require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
 			assert.Contains(t, w.Body.String(), "resync")
@@ -1798,13 +1798,14 @@ func TestCanceledForegroundSyncLeavesStartupFallbackEligible(t *testing.T) {
 		"a canceled HTTP sync must leave daemon startup recovery eligible")
 }
 
-func TestHumaSyncSessionLocalNoSyncRejectsStaleDB(t *testing.T) {
+func TestHumaSyncSessionLocalNoSyncResyncsStaleDB(t *testing.T) {
 	f := newSyncRouteFixture(t, withStaleDB())
 	sessionPath := f.writeClaudeSession(t, "proj/session.jsonl", "stale session sync route")
 	w := postSessionSync(t, f.handler, sessionPath)
-	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
-	assert.True(t, f.db.NeedsResync())
-	assert.Contains(t, w.Body.String(), "agentsview resync")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	assert.False(t, f.db.NeedsResync())
+	detail := decodeRecorder[service.SessionDetail](t, w)
+	assertFirstMessageContains(t, detail.FirstMessage, "stale session sync route")
 }
 
 func TestHumaSyncSessionCanceledPreResyncReturnsNil(t *testing.T) {

@@ -1411,7 +1411,7 @@ func TestSessionUsage_ServerFlagUsesHTTP(t *testing.T) {
 	assert.Equal(t, "breakdown=true&subagents=true", reqs.UsageQuery,
 		"remote CLI must request full breakdown rows and subagent usage")
 	assert.Equal(t, service.SyncInput{
-		ID: "remote-session", Subagents: true,
+		ID: "remote-session", Subagents: true, Foreground: true,
 	}, reqs.SyncInput)
 	assert.Equal(t, []string{
 		"/api/v1/version",
@@ -1630,7 +1630,7 @@ func TestSessionUsage_ServerFlagOwnOnlySkipsSubagents(t *testing.T) {
 	require.NotNil(t, out)
 	assert.Equal(t, "breakdown=true", reqs.UsageQuery,
 		"--own-only must not ask the daemon for subagent usage")
-	assert.Equal(t, service.SyncInput{ID: "remote-session"}, reqs.SyncInput)
+	assert.Equal(t, service.SyncInput{ID: "remote-session", Foreground: true}, reqs.SyncInput)
 	assert.Equal(t, []string{
 		"/api/v1/sessions/remote-session",
 		"/api/v1/sessions/sync",
@@ -1746,7 +1746,7 @@ func TestSessionUsage_UsesDiscoveredDaemon(t *testing.T) {
 				return
 			}
 			assert.Equal(t, service.SyncInput{
-				ID: "remote-session", Subagents: true,
+				ID: "remote-session", Subagents: true, Foreground: true,
 			}, input)
 			_, _ = w.Write([]byte(`{"id":"remote-session"}`))
 		case "/api/v1/sessions/remote-session/usage":
@@ -1821,7 +1821,7 @@ func TestTokenUse_UsesDiscoveredDaemon(t *testing.T) {
 				return
 			}
 			assert.Equal(t, service.SyncInput{
-				ID: "remote-session", Subagents: true,
+				ID: "remote-session", Subagents: true, Foreground: true,
 			}, input)
 			_, _ = w.Write([]byte(`{"id":"remote-session"}`))
 		case "/api/v1/sessions/remote-session/usage":

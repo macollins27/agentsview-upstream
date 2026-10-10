@@ -528,7 +528,11 @@ func (b *httpBackend) Sync(
 	if err != nil {
 		return nil, err
 	}
-	response, err := api.PostAPIV1SessionsSyncWithResponse(ctx, &apiclient.PostAPIV1SessionsSyncRequestOptions{Body: &apiclient.PostAPIV1SessionsSyncBody{ID: new(in.ID), Path: new(in.Path), Subagents: new(in.Subagents)}})
+	var foreground *bool
+	if in.Foreground {
+		foreground = new(true)
+	}
+	response, err := api.PostAPIV1SessionsSyncWithResponse(ctx, &apiclient.PostAPIV1SessionsSyncRequestOptions{Body: &apiclient.PostAPIV1SessionsSyncBody{Foreground: foreground, ID: new(in.ID), Path: new(in.Path), Subagents: new(in.Subagents)}})
 	if response == nil {
 		return nil, err
 	}
@@ -538,6 +542,10 @@ func (b *httpBackend) Sync(
 	}
 	if err := serviceResponseError(response.HTTPResponse, response.Body, err); err != nil {
 		return nil, err
+	}
+
+	if detail == nil || detail.ID == "" {
+		return nil, errors.New("sync: server returned no session detail")
 	}
 
 	detail.WebURL = b.sessionWebURL(detail.ID)

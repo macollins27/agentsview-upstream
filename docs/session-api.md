@@ -575,13 +575,15 @@ error that lists every candidate id. The contract is "one session in, one
 At that point the file has already been parsed and every candidate session
 written to the local archive — the ambiguity check runs after the sync engine
 finishes. Re-run `session sync <id>` with the specific session you want; the
-`<id>` form resolves the file path from the archive, so it only works for
-sessions already present there.
+`<id>` form resolves the provider's local source, including sessions absent
+from the archive.
 
 - `session sync` uses a writable local daemon when one is running, or starts a
   detached daemon when no compatible daemon is running. It then proxies to
   `POST /api/v1/sessions/sync` so parsing and signal computation remain
-  daemon-owned.
+  daemon-owned. Manual sync waits for an active writer and rebuilds a stale
+  archive before indexing. Usage refresh uses `foreground: true` to return a
+  conflict instead; it reads stored usage with a warning.
 - If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
   (read-only), sync refuses with a clear error.
 - If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI runs the sync in-process only

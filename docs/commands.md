@@ -1711,8 +1711,9 @@ agentsview session usage <id> --own-only # exclude subagent transcripts
 spawned it, so a parent that delegated most of its work still reports the full
 cost. `--own-only` restores the older own-session output.
 
-Session sync requests return HTTP 409 while another sync owns the writer or the
-archive needs a rebuild. Run `agentsview resync` when a rebuild is required.
+Session usage returns stored usage with a warning while another sync owns the
+writer or the archive needs a rebuild. Manual `session sync` waits for the writer
+and rebuilds a stale archive before indexing.
 Syncing an ID absent from the archive imports its local source when available.
 
 `session search` supports substring (default), `--regex`, `--fts`, `--semantic`,

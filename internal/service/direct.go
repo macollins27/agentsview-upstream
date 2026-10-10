@@ -536,63 +536,41 @@ func (b *directBackend) Sync(
 	if in.Subagents && in.ID == "" {
 		return nil, errors.New("sync: subagents requires id")
 	}
-	if in.Subagents {
-		if err := b.engine.TrySyncSessionWithSubagentsContext(
-			ctx, in.ID,
-		); err != nil {
-			return nil, err
-		}
-		return b.Get(ctx, in.ID)
+
+	syncSingle := b.engine.SyncSingleSessionContext
+	syncCombined := b.engine.SyncSessionWithSubagentsContext
+	syncPaths := b.engine.SyncPathsContext
+	if in.Foreground {
+		syncSingle = b.engine.TrySyncSingleSessionContext
+		syncCombined = b.engine.TrySyncSessionWithSubagentsContext
+		syncPaths = b.engine.TrySyncPathsContext
 	}
 
 	path := in.Path
-	if path == "" {
-		storedPath := b.local.GetSessionFilePath(ctx, in.ID)
-		if storedPath == "" {
-			if err := b.engine.TrySyncSingleSessionContext(ctx, in.ID); err != nil {
-				return nil, err
-			}
-			return b.Get(ctx, in.ID)
+	if in.ID != "" {
+		if isVibeSessionID(in.ID) {
+			path = b.engine.FindSourceFile(ctx, in.ID)
 		}
-		// Visual Studio Copilot stores file_path as a
-		// <traceFile>#<conversationID> virtual key. Stripping it to the
-		// physical trace and syncing the path would reparse every conversation
-		// in that trace, lose the requested conversation's scope, and do
-		// nothing if the representative trace was deleted while the
-		// conversation lives on in a sibling. The single-session path keeps the
-		// conversation scope and follows it across sibling trace files.
-		if _, _, ok := parser.SplitVisualStudioCopilotVirtualPath(storedPath); ok {
-			if err := b.engine.TrySyncSingleSessionContext(
-				ctx, in.ID,
-			); err != nil {
-				return nil, err
-			}
-			return b.Get(ctx, in.ID)
+		var err error
+		if in.Subagents {
+			err = syncCombined(ctx, in.ID)
+		} else {
+			err = syncSingle(ctx, in.ID)
 		}
-		if _, _, ok := parser.SplitWindsurfVirtualPath(storedPath); ok {
-			if err := b.engine.TrySyncSingleSessionContext(
-				ctx, in.ID,
-			); err != nil {
-				return nil, err
-			}
-			return b.Get(ctx, in.ID)
+		if err != nil {
+			return nil, err
 		}
-		path = parser.ResolveSourceFilePath(storedPath)
-	}
-
-	if err := b.engine.TrySyncPathsContext(ctx, []string{path}); err != nil {
-		return nil, err
-	}
-
-	id := in.ID
-	if id == "" {
+	} else {
+		if err := syncPaths(ctx, []string{path}); err != nil {
+			return nil, err
+		}
 		resolved, err := b.resolveSessionIDByPath(ctx, path)
 		if err != nil {
 			return nil, err
 		}
-		id = resolved
-		return b.Get(ctx, id)
+		return b.Get(ctx, resolved)
 	}
+	id := in.ID
 
 	detail, err := b.Get(ctx, id)
 	if err != nil || detail != nil {
