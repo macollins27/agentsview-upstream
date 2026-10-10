@@ -1074,8 +1074,9 @@ when a previous daily report started the daemon. Later statusline queries rely
 on the daemon's file watcher for source changes.
 
 While another sync owns the writer or the archive needs a rebuild, session usage
-returns stored usage with a refresh warning. An unarchived session reports the
-refresh error. Run `agentsview resync` when a rebuild is required.
+returns stored usage with a refresh warning. First imports wait for the writer;
+an unarchived session reports the rebuild cause when the archive is stale.
+Run `agentsview resync` when a rebuild is required.
 
 `--no-sync` skips source refresh and starts any new daemon without automatic
 sync. It does not disable sync on an already-running daemon. `--offline` reads

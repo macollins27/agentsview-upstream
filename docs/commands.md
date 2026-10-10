@@ -1714,7 +1714,7 @@ cost. `--own-only` restores the older own-session output.
 Session usage returns stored usage with a warning while another sync owns the
 writer or the archive needs a rebuild. Manual `session sync` waits for the writer
 and rebuilds a stale archive before indexing.
-Syncing an ID absent from the archive imports its local source when available.
+First usage imports wait for the writer, then import the named local source.
 
 `session search` supports substring (default), `--regex`, `--fts`, `--semantic`,
 and `--hybrid` modes. Repeatable `--exclude-session <id>` drops matches from

@@ -1947,11 +1947,6 @@ func (e *Engine) ReparsePathsContext(ctx context.Context, paths []string) error 
 	return e.syncPathsContext(ctx, paths, true, false)
 }
 
-// TrySyncPathsContext refreshes selected sources only when the writer is available.
-func (e *Engine) TrySyncPathsContext(ctx context.Context, paths []string) error {
-	return e.syncPathsContext(ctx, paths, false, true)
-}
-
 func (e *Engine) lockTargetedSync(foreground bool) error {
 	if foreground {
 		if !e.syncMu.TryLock() {

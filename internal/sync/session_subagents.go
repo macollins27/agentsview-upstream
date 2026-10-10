@@ -40,6 +40,9 @@ func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		parentAgent = def.Type
 	}
 	sourcePath := e.db.GetSessionFilePath(ctx, sessionID)
+	if sourcePath == "" {
+		sourcePath = e.FindSourceFile(ctx, sessionID)
+	}
 	paths := subagentTranscriptPaths(sourcePath)
 	if len(paths) == 0 {
 		return parentErr

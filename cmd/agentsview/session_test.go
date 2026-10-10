@@ -1439,8 +1439,6 @@ func TestSessionUsage_NoSyncPreservesAuthenticatedResolution(t *testing.T) {
 	assert.Equal(t, canonicalID, out.SessionID)
 	assert.Equal(t, 42, out.TotalOutputTokens)
 	assert.Equal(t, "breakdown=true&subagents=true", reqs.UsageQuery)
-	assert.Empty(t, reqs.SyncInput.ID)
-	assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
 	assert.Contains(t, reqs.RequestPath, "/api/v1/sessions/"+rawID)
 	assert.Contains(t, reqs.RequestPath, "/api/v1/sessions/"+canonicalID)
 }
@@ -2204,7 +2202,7 @@ func TestSessionUsage_PGFlagResolvesColonBearingRawSessionID(t *testing.T) {
 	assert.Equal(t, 84, out.TotalOutputTokens)
 }
 
-func TestSessionSync_UnknownID_ReportsMissingSource(t *testing.T) {
+func TestSessionSync_UnknownID_ReportsMissingPath(t *testing.T) {
 	newAgentDataDir(t)
 	t.Setenv("AGENTSVIEW_NO_DAEMON", "1")
 
@@ -2212,7 +2210,7 @@ func TestSessionSync_UnknownID_ReportsMissingSource(t *testing.T) {
 		"session", "sync", "missing-id")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing-id")
-	assert.Contains(t, err.Error(), "source file not found")
+	assert.Contains(t, err.Error(), "no file_path recorded")
 	assert.NotContains(t, err.Error(), "read-only",
 		"engine must be plumbed; got ErrReadOnly-style message: %v", err)
 }

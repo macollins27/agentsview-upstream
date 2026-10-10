@@ -539,11 +539,15 @@ func (b *directBackend) Sync(
 
 	syncSingle := b.engine.SyncSingleSessionContext
 	syncCombined := b.engine.SyncSessionWithSubagentsContext
-	syncPaths := b.engine.SyncPathsContext
-	if in.Foreground {
-		syncSingle = b.engine.TrySyncSingleSessionContext
-		syncCombined = b.engine.TrySyncSessionWithSubagentsContext
-		syncPaths = b.engine.TrySyncPathsContext
+	if in.Foreground && in.ID != "" {
+		archived, err := b.local.GetSession(ctx, in.ID)
+		if err != nil {
+			return nil, err
+		}
+		if archived != nil {
+			syncSingle = b.engine.TrySyncSingleSessionContext
+			syncCombined = b.engine.TrySyncSessionWithSubagentsContext
+		}
 	}
 
 	path := in.Path
@@ -558,11 +562,14 @@ func (b *directBackend) Sync(
 			err = syncSingle(ctx, in.ID)
 		} else {
 			storedPath := b.local.GetSessionFilePath(ctx, in.ID)
+			if storedPath == "" {
+				return nil, fmt.Errorf("sync: no file_path recorded for session %q", in.ID)
+			}
 			_, _, visualStudio := parser.SplitVisualStudioCopilotVirtualPath(storedPath)
 			_, _, windsurf := parser.SplitWindsurfVirtualPath(storedPath)
-			if storedPath != "" && !visualStudio && !windsurf {
+			if !visualStudio && !windsurf {
 				path = parser.ResolveSourceFilePath(storedPath)
-				err = syncPaths(ctx, []string{path})
+				err = b.engine.SyncPathsContext(ctx, []string{path})
 			} else {
 				err = syncSingle(ctx, in.ID)
 			}
@@ -571,7 +578,7 @@ func (b *directBackend) Sync(
 			return nil, err
 		}
 	} else {
-		if err := syncPaths(ctx, []string{path}); err != nil {
+		if err := b.engine.SyncPathsContext(ctx, []string{path}); err != nil {
 			return nil, err
 		}
 		resolved, err := b.resolveSessionIDByPath(ctx, path)

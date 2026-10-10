@@ -575,16 +575,15 @@ error that lists every candidate id. The contract is "one session in, one
 At that point the file has already been parsed and every candidate session
 written to the local archive — the ambiguity check runs after the sync engine
 finishes. Re-run `session sync <id>` with the specific session you want; the
-`<id>` form resolves the provider's local source, including sessions absent
-from the archive.
+`<id>` form uses the archived session's recorded source path.
 
 - `session sync` uses a writable local daemon when one is running, or starts a
   detached daemon when no compatible daemon is running. It then proxies to
   `POST /api/v1/sessions/sync` so parsing and signal computation remain
   daemon-owned. Manual sync waits for an active writer and rebuilds a stale
-  archive before indexing. Usage refresh uses `foreground: true` to return a
-  conflict for either contention or a required rebuild; it reads stored usage
-  with a warning. Remote usage refresh requires API 11; `--no-sync` keeps
+  archive before indexing. Usage refresh uses `foreground: true` to reject a
+  required rebuild and return stored usage promptly when the writer is busy.
+  First imports wait for the writer. Remote usage refresh requires API 11; `--no-sync` keeps
   archived reads available on older servers.
 - Local clients replace an older-API daemon before reading or writing the
   archive, including daemons with the same development version. Replacement

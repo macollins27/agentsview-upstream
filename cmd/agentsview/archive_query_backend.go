@@ -309,30 +309,42 @@ func (b localArchiveQueryBackend) SessionUsage(
 	)
 
 	if known && !b.skipFreshData && !query.NoSync {
-		engine := sync.NewEngine(ctx, b.database, sync.EngineConfig{
-			AgentDirs:               b.cfg.AgentDirs,
-			SourceMachines:          b.cfg.SourceMachines,
-			ProviderMetadata:        b.cfg.ProviderMetadata,
-			DisabledAgents:          b.cfg.DisabledAgents,
-			IncludeCwdPrefixes:      b.cfg.SyncIncludeCwdPrefixes,
-			ScanProtectedPaths:      b.cfg.ScanProtectedPaths,
-			Machine:                 b.cfg.InstallationID,
-			BlockedResultCategories: b.cfg.ResultContentBlockedCategories,
-			ArchiveContent:          b.cfg.ArchiveContent,
-		})
-		var syncErr error
-		if query.OwnOnly {
-			syncErr = engine.SyncSingleSessionContext(ctx, resolvedID)
+		if b.database.NeedsResync() {
+			refreshErr := fmt.Errorf("archive data version changed; run agentsview resync before refreshing session usage")
+			archived, err := b.database.GetSession(ctx, resolvedID)
+			if err != nil {
+				return nil, tokenUseExitErr, err
+			}
+			if archived == nil {
+				return nil, tokenUseExitErr, refreshErr
+			}
+			fmt.Fprintf(os.Stderr, "warning: refresh incomplete; showing stored usage: %v\n", refreshErr)
 		} else {
-			syncErr = engine.SyncSessionWithSubagentsContext(ctx, resolvedID)
+			engine := sync.NewEngine(ctx, b.database, sync.EngineConfig{
+				AgentDirs:               b.cfg.AgentDirs,
+				SourceMachines:          b.cfg.SourceMachines,
+				ProviderMetadata:        b.cfg.ProviderMetadata,
+				DisabledAgents:          b.cfg.DisabledAgents,
+				IncludeCwdPrefixes:      b.cfg.SyncIncludeCwdPrefixes,
+				ScanProtectedPaths:      b.cfg.ScanProtectedPaths,
+				Machine:                 b.cfg.InstallationID,
+				BlockedResultCategories: b.cfg.ResultContentBlockedCategories,
+				ArchiveContent:          b.cfg.ArchiveContent,
+			})
+			var syncErr error
+			if query.OwnOnly {
+				syncErr = engine.SyncSingleSessionContext(ctx, resolvedID)
+			} else {
+				syncErr = engine.SyncSessionWithSubagentsContext(ctx, resolvedID)
+			}
+			if syncErr != nil {
+				fmt.Fprintf(os.Stderr,
+					"warning: sync failed: %v\n", syncErr)
+			}
+			// Flush pending debounced signal recomputes before the
+			// usage query reads the session.
+			engine.Close()
 		}
-		if syncErr != nil {
-			fmt.Fprintf(os.Stderr,
-				"warning: sync failed: %v\n", syncErr)
-		}
-		// Flush pending debounced signal recomputes before the
-		// usage query reads the session.
-		engine.Close()
 	}
 
 	load := func() (*db.SessionUsage, error) {

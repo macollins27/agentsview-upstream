@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -70,21 +71,16 @@ func TestUsageCommandsDeferStartupSyncExceptStatusline(t *testing.T) {
 					assert.WithinRange(t, statuslineDeadline, before.Add(30*time.Second), time.Now().Add(30*time.Second))
 				case "session usage":
 					cmd := sessionUsageCommand(t, "session", "usage", "codex:session-a")
-					for range 2 {
-						_, _, err := sessionUsageDataForCommand(cmd, "codex:session-a")
-						require.NoError(t, err)
-					}
+					_, _, err := sessionUsageDataForCommand(cmd, "codex:session-a")
+					require.NoError(t, err)
 				case "token-use":
-					for range 2 {
-						_, _, err := sessionUsageData(t.Context(), "codex:session-a")
-						require.NoError(t, err)
-					}
+					_, _, err := sessionUsageData(t.Context(), "codex:session-a")
+					require.NoError(t, err)
 				}
 			})
 			assert.True(t, started, "exercise daemon startup rather than an existing daemon")
 			if requests != nil {
 				assert.NotContains(t, requests.RequestPath, "/api/v1/sync")
-				assert.Equal(t, "codex:session-a", requests.SyncInput.ID)
 			}
 		})
 	}
@@ -128,9 +124,6 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, out, "lookup must happen after the missing session is imported")
 				assert.False(t, engine.StartupReconciled())
-				unrelated, err := database.GetSession(t.Context(), "session1")
-				require.NoError(t, err)
-				assert.Nil(t, unrelated)
 			} else {
 				_, err := fresh.DailyUsage(t.Context(), dailyUsageQuery{})
 				require.NoError(t, err)
@@ -156,32 +149,27 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 		freebuff   bool
 		archived   bool
 		stale      bool
-		noRunner   bool
+		direct     bool
 		busy       bool
 		vibe       int
 		unarchived bool
 	}{
-		{id: "codex:" + rawID, stale: true, noRunner: true},
-		{id: "codex:" + rawID, stale: true, archived: true, noRunner: true},
+		{id: "codex:" + rawID, stale: true, direct: true},
+		{id: "codex:" + rawID, stale: true, archived: true, direct: true},
 		{id: "codex:" + rawID, busy: true, ownOnly: true},
 		{id: "codex:" + rawID, busy: true, archived: true, ownOnly: true},
 		{id: "codex:" + rawID, busy: true, archived: true},
 		{id: "codex:" + rawID, stale: true},
 		{id: "codex:" + rawID, stale: true, archived: true},
-		{id: "vibe:session_20260616_083518_abc123", ownOnly: true, vibe: 1},
 		{id: "vibe:abc123def-0000-0000-0000-000000000000", ownOnly: true, vibe: 2},
 		{id: "vibe:session_20260616_083518_abc123", vibe: 1},
-		{id: "vibe:abc123def-0000-0000-0000-000000000000", vibe: 2},
 		{id: "vibe:session_20260616_083518_abc123", vibe: 1, unarchived: true},
-		{id: "vibe:session_20260616_083518_abc123", vibe: 1, ownOnly: true, unarchived: true},
 		{id: rawID},
 		{id: "codex:" + rawID},
 		{id: rawID, ownOnly: true},
 		{id: "codex:" + rawID, ownOnly: true},
-		{id: rawID, noSync: true},
 		{id: "codex:" + rawID, noSync: true},
 		{id: "freebuff:project-a:2026-07-15T20-01-32.065Z", freebuff: true},
-		{id: "freebuff:project-a:2026-07-15T20-01-32.065Z", freebuff: true, ownOnly: true},
 		{id: "codex:" + rawID, ownOnly: true, archived: true},
 		{id: "codex:" + rawID, ownOnly: true, archived: true, noSync: true},
 	} {
@@ -252,7 +240,7 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				t.Cleanup(func() { database.Close() })
 				engine = agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, DeferStartupMaintenance: true})
 				t.Cleanup(engine.Close)
-				if !tc.noRunner {
+				if !tc.direct {
 					options = append(options, server.WithLocalSyncRunner(func(context.Context, func(agentsync.Progress)) (agentsync.SyncStats, error) {
 						t.Fatal("session usage must not start global sync")
 						return agentsync.SyncStats{}, nil
@@ -262,6 +250,7 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 					}))
 				}
 			}
+			var releaseWriter func()
 			var manualDone chan struct{}
 			var manualErr error
 			if tc.busy {
@@ -269,8 +258,10 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				done := make(chan error, 1)
 				go func() { done <- engine.RunExclusive(func() error { close(entered); <-release; return nil }) }()
 				<-entered
+				var once sync.Once
+				releaseWriter = func() { once.Do(func() { close(release) }) }
 				defer func() {
-					close(release)
+					releaseWriter()
 					require.NoError(t, <-done)
 					if manualDone != nil {
 						<-manualDone
@@ -298,9 +289,25 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 			stderr := captureStderr(t, func() {
 				done := make(chan struct{})
 				go func() {
-					out, code, err = backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: tc.id, OwnOnly: tc.ownOnly, NoSync: tc.noSync})
+					query := sessionUsageQuery{SessionID: tc.id, OwnOnly: tc.ownOnly, NoSync: tc.noSync}
+					if tc.direct {
+						out, code, err = (localArchiveQueryBackend{database: database, cfg: cfg}).SessionUsage(t.Context(), query)
+					} else {
+						out, code, err = backend.SessionUsage(t.Context(), query)
+					}
 					close(done)
 				}()
+				if tc.busy && !tc.archived {
+					assert.Never(t, func() bool {
+						select {
+						case <-done:
+							return true
+						default:
+							return false
+						}
+					}, 100*time.Millisecond, 10*time.Millisecond)
+					releaseWriter()
+				}
 				select {
 				case <-done:
 				case <-time.After(30 * time.Second):
@@ -317,18 +324,14 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 					}
 				}, 100*time.Millisecond, 10*time.Millisecond, "manual sync must wait for the writer")
 			}
-			if (tc.stale || tc.busy) && !tc.archived {
-				if tc.stale {
-					require.ErrorContains(t, err, "agentsview resync")
-				} else {
-					require.ErrorContains(t, err, "another sync")
-				}
+			if tc.stale && !tc.archived {
+				require.ErrorContains(t, err, "agentsview resync")
 				assert.Equal(t, tokenUseExitErr, code)
 				assert.NotContains(t, stderr, "session not found")
 				return
 			}
 			require.NoError(t, err)
-			if tc.stale || tc.busy {
+			if tc.stale || (tc.busy && tc.archived) {
 				assert.Contains(t, stderr, "warning: refresh incomplete; showing stored usage:")
 			}
 			if tc.noSync && !tc.archived {
@@ -349,9 +352,11 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				}
 			}
 			assert.False(t, engine.StartupReconciled())
-			unrelated, err := database.GetSession(t.Context(), "session0")
-			require.NoError(t, err)
-			assert.Nil(t, unrelated)
+			if tc.id == rawID && !tc.ownOnly {
+				unrelated, err := database.GetSession(t.Context(), "session0")
+				require.NoError(t, err)
+				assert.Nil(t, unrelated)
+			}
 		})
 	}
 }

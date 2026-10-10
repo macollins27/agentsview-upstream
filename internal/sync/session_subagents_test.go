@@ -1,13 +1,17 @@
 package sync
 
 import (
+	"database/sql"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
@@ -43,4 +47,29 @@ func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSyncSessionWithSubagentsDiscoversAfterMalformedUnarchivedParent(t *testing.T) {
+	database := openTestDB(t)
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	descendants := filepath.Join(project, "parent", "subagents")
+	require.NoError(t, os.MkdirAll(descendants, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(project, "parent.jsonl"), []byte("invalid json\n"), 0o600))
+	content := testjsonl.ClaudeUserWithSessionIDJSON("child", "2026-05-20T10:01:00Z", "parent") + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(descendants, "agent-child.jsonl"), []byte(content), 0o600))
+	engine := NewEngine(t.Context(), database, EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {root}}, DeferStartupMaintenance: true})
+	t.Cleanup(engine.Close)
+	raw, err := sql.Open("sqlite3", database.Path())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	_, err = raw.ExecContext(t.Context(), `CREATE TRIGGER fail_parent BEFORE INSERT ON sessions WHEN NEW.id = 'parent' BEGIN SELECT RAISE(FAIL, 'parent refresh failed'); END`)
+	require.NoError(t, err)
+	require.ErrorContains(t, engine.SyncSessionWithSubagentsContext(t.Context(), "parent"), "parent refresh failed")
+	parent, err := database.GetSession(t.Context(), "parent")
+	require.NoError(t, err)
+	require.Nil(t, parent)
+	child, err := database.GetSession(t.Context(), "agent-child")
+	require.NoError(t, err)
+	require.NotNil(t, child)
 }

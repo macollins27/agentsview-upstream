@@ -3,7 +3,7 @@
  */
 
 export interface ServiceSyncInput {
-  /** Reject writer contention or a required archive rebuild without waiting or rebuilding */
+  /** Try archived refreshes without waiting; wait for first imports; reject required archive rebuilds */
   foreground?: boolean;
   id?: string;
   path?: string;

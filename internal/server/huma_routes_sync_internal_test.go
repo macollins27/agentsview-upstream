@@ -1581,22 +1581,34 @@ func TestHumaTriggerSyncLocalNoSyncResyncsStaleDB(t *testing.T) {
 // /resync and never runs the runner, since the worker refuses to swap the
 // archive under the live daemon.
 func TestHumaTriggerSyncWorkerBackedRejectsStaleArchive(t *testing.T) {
-	for _, path := range []string{"/api/v1/sync", "/api/v1/sessions/sync"} {
+	for _, tc := range []struct {
+		path     string
+		noRunner bool
+	}{{"/api/v1/sync", false}, {"/api/v1/sessions/sync", false}, {"/api/v1/sessions/sync", true}} {
+		path := tc.path
 		t.Run(path, func(t *testing.T) {
 			ran := false
 			resyncCalls := 0
-			f := newSyncRouteFixture(t, withStaleDB(), withLocalSyncRunner(
-				func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
-					ran = true
+			opts := []syncRouteFixtureOption{withStaleDB()}
+			if !tc.noRunner {
+				opts = append(opts, withLocalSyncRunner(
+					func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+						ran = true
+						return syncpkg.SyncStats{}, nil
+					},
+				), withLocalResyncRunner(func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+					resyncCalls++
 					return syncpkg.SyncStats{}, nil
-				},
-			), withLocalResyncRunner(func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
-				resyncCalls++
-				return syncpkg.SyncStats{}, nil
-			}))
+				}))
+			}
+			f := newSyncRouteFixture(t, opts...)
 			require.True(t, f.db.NeedsResync())
 
-			w := serveJSON(t, f.handler, http.MethodPost, path, service.SyncInput{ID: "session-a", Subagents: true, Foreground: true})
+			var body any
+			if path == "/api/v1/sessions/sync" {
+				body = service.SyncInput{ID: "session-a", Subagents: true, Foreground: true}
+			}
+			w := serveJSON(t, f.handler, http.MethodPost, path, body)
 
 			require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
 			assert.Contains(t, w.Body.String(), "resync")
@@ -1800,9 +1812,11 @@ func TestCanceledForegroundSyncLeavesStartupFallbackEligible(t *testing.T) {
 
 func TestHumaSyncSessionLocalNoSyncResyncsStaleDB(t *testing.T) {
 	f := newSyncRouteFixture(t, withStaleDB())
+	sessionPath := f.writeClaudeSession(t, "proj/session.jsonl",
+		"stale session sync route")
 	require.True(t, f.db.NeedsResync())
-	sessionPath := f.writeClaudeSession(t, "proj/session.jsonl", "stale session sync route")
 	w := postSessionSync(t, f.handler, sessionPath)
+
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 	assert.False(t, f.db.NeedsResync())
 	detail := decodeRecorder[service.SessionDetail](t, w)

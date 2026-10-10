@@ -6678,7 +6678,7 @@ components:
       additionalProperties: false
       properties:
         foreground:
-          description: Reject writer contention or a required archive rebuild without waiting or rebuilding
+          description: Try archived refreshes without waiting; wait for first imports; reject required archive rebuilds
           type: boolean
         id:
           type: string
