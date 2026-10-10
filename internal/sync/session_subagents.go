@@ -21,7 +21,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 	return e.syncSessionWithSubagentsContext(ctx, sessionID, false)
 }
 
-// TrySyncSessionWithSubagentsContext tries the writer for each requested source batch.
+// TrySyncSessionWithSubagentsContext tries archived batches and waits for first descendant imports.
 func (e *Engine) TrySyncSessionWithSubagentsContext(ctx context.Context, sessionID string) error {
 	return e.syncSessionWithSubagentsContext(ctx, sessionID, true)
 }
@@ -46,6 +46,18 @@ func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID 
 	paths := subagentTranscriptPaths(sourcePath)
 	if len(paths) == 0 {
 		return parentErr
+	}
+	if foreground {
+		for _, path := range paths {
+			ids, err := e.db.ListSessionIDsByFilePath(ctx, path, string(parentAgent))
+			if err != nil {
+				return errors.Join(parentErr, err)
+			}
+			if len(ids) == 0 {
+				foreground = false
+				break
+			}
+		}
 	}
 
 	var subagentErr error

@@ -5,9 +5,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
@@ -15,11 +17,31 @@ import (
 )
 
 func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
-	for _, path := range []string{"missing.jsonl", "s3://bucket/project/parent.jsonl"} {
-		t.Run(path, func(t *testing.T) {
+	for _, tc := range []struct {
+		path        string
+		firstImport bool
+	}{{"missing.jsonl", false}, {"s3://bucket/project/parent.jsonl", false}, {"new-child", true}} {
+		t.Run(tc.path, func(t *testing.T) {
 			database := openTestDB(t)
+			path, childPath := tc.path, "archived-child.jsonl"
+			cfg := EngineConfig{DeferStartupMaintenance: true}
+			if tc.firstImport {
+				root := t.TempDir()
+				project := filepath.Join(root, "project")
+				require.NoError(t, os.MkdirAll(project, 0o755))
+				path, childPath = filepath.Join(project, "parent.jsonl"), filepath.Join(project, "parent", "subagents", "agent-child.jsonl")
+				require.NoError(t, os.MkdirAll(filepath.Dir(childPath), 0o755))
+				require.NoError(t, os.WriteFile(path, []byte(testjsonl.ClaudeUserJSON("parent", "2026-05-20T10:00:00Z")+"\n"), 0o600))
+				require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.ClaudeUserWithSessionIDJSON("child", "2026-05-20T10:01:00Z", "parent")+"\n"), 0o600))
+				cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {root}}
+			} else {
+				if strings.HasPrefix(path, "s3://") {
+					childPath = "s3://bucket/project/child.jsonl"
+				}
+				require.NoError(t, database.UpsertSession(t.Context(), db.Session{ID: "agent-child", Agent: "claude", Project: "project", Machine: "local", FilePath: &childPath}))
+			}
 			require.NoError(t, database.UpsertSession(t.Context(), db.Session{ID: "parent", Agent: "claude", Project: "project", Machine: "local", FilePath: &path}))
-			engine := NewEngine(t.Context(), database, EngineConfig{DeferStartupMaintenance: true})
+			engine := NewEngine(t.Context(), database, cfg)
 			t.Cleanup(engine.Close)
 			oldPaths, oldFetch, oldStat := subagentTranscriptPaths, fetchS3Object, statClaudeS3Session
 			t.Cleanup(func() { subagentTranscriptPaths, fetchS3Object, statClaudeS3Session = oldPaths, oldFetch, oldStat })
@@ -29,16 +51,25 @@ func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
 			subagentTranscriptPaths = func(string) []string {
 				engine.syncMu.Lock()
 				close(locked)
-				return []string{path}
+				return []string{childPath}
 			}
 			done := make(chan error, 1)
 			go func() { done <- engine.TrySyncSessionWithSubagentsContext(t.Context(), "parent") }()
 			select {
 			case <-locked:
-				defer engine.syncMu.Unlock()
 			case <-time.After(30 * time.Second):
 				t.Fatal("parent refresh did not reach descendant discovery")
 			}
+			if tc.firstImport {
+				assert.Never(t, func() bool { return len(done) > 0 }, 100*time.Millisecond, 10*time.Millisecond)
+				engine.syncMu.Unlock()
+				require.NoError(t, <-done)
+				child, err := database.GetSession(t.Context(), "agent-child")
+				require.NoError(t, err)
+				require.NotNil(t, child)
+				return
+			}
+			defer engine.syncMu.Unlock()
 			select {
 			case err := <-done:
 				require.ErrorIs(t, err, ErrSyncInProgress)

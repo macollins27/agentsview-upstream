@@ -1069,6 +1069,8 @@ without requesting full startup ingestion. `--own-only` refreshes just the
 named session. A newly started daemon still runs deferred background ingestion.
 Local lookups can import a session from its source. `--server` resolves IDs only
 from the remote archive.
+Restart the daemon after changing source directories so local discovery and
+daemon imports use the same configuration.
 `usage statusline` completes pending startup ingestion before querying, including
 when a previous daily report started the daemon. Later statusline queries rely
 on the daemon's file watcher for source changes.

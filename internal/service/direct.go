@@ -599,7 +599,7 @@ func (b *directBackend) Sync(
 	// demoted to the directory-name fallback when meta.json is removed or
 	// becomes unparseable. For a Vibe ID, resolve the file's current session
 	// and confirm it is the replacement before returning it.
-	if !isVibeSessionID(id) {
+	if !isVibeSessionID(id) || path == "" {
 		return nil, syncSessionNotFoundError(id)
 	}
 	resolved, err := b.resolveSessionIDByPath(ctx, path)
