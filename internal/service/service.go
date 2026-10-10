@@ -496,6 +496,7 @@ type ToolCallList struct {
 
 // SyncInput carries the payload for a per-session sync.
 // Exactly one of Path or ID must be set.
+// Foreground rejects a busy writer or stale archive without waiting or rebuilding.
 type SyncInput struct {
 	Path       string `json:"path,omitempty"`
 	ID         string `json:"id,omitempty"`
