@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -50,8 +51,12 @@ func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		sourcePath = e.FindSourceFile(ctx, sessionID)
 	}
 	paths := subagentTranscriptPaths(sourcePath)
+	refreshedPaths := make(map[string]bool)
+	if parentAgent == parser.AgentCodebuff {
+		refreshedPaths[sourcePath] = parentErr == nil
+	}
 	if len(paths) == 0 {
-		return errors.Join(parentErr, e.syncReferencedSessionChildren(ctx, sessionID, referenceForeground))
+		return errors.Join(parentErr, e.syncReferencedSessionChildren(ctx, sessionID, referenceForeground, refreshedPaths))
 	}
 	if foreground {
 		for _, path := range paths {
@@ -73,47 +78,56 @@ func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID 
 	} else {
 		subagentErr = e.syncPathsContext(ctx, paths, false, foreground)
 	}
-	return errors.Join(parentErr, subagentErr, e.syncReferencedSessionChildren(ctx, sessionID, referenceForeground))
+	if subagentErr == nil {
+		for _, path := range paths {
+			refreshedPaths[path] = true
+		}
+	}
+	return errors.Join(parentErr, subagentErr, e.syncReferencedSessionChildren(ctx, sessionID, referenceForeground, refreshedPaths))
 }
 
-func (e *Engine) syncReferencedSessionChildren(ctx context.Context, parentID string, foreground bool) error {
-	visited := map[string]bool{parentID: true}
-	pending := []string{parentID}
+func (e *Engine) syncReferencedSessionChildren(ctx context.Context, parentID string, foreground bool, refreshedPaths map[string]bool) error {
+	refreshed := map[string]bool{parentID: true}
 	var refreshErr error
-	for len(pending) > 0 {
-		id := pending[0]
-		pending = pending[1:]
-		children, err := e.db.SubagentChildSessionIDs(ctx, []string{id})
-		if err != nil {
-			return errors.Join(refreshErr, err)
-		}
-		for _, child := range children {
-			if visited[child] {
-				continue
-			}
-			visited[child] = true
-			archived, err := e.db.GetSession(ctx, child)
+	_, walkErr := db.WalkDelegatedDescendants(ctx, parentID, false, func(ctx context.Context, id string) ([]db.Session, error) {
+		if !refreshed[id] {
+			refreshed[id] = true
+			archived, err := e.db.GetSession(ctx, id)
 			if err == nil {
 				if archived == nil {
 					var imported string
-					imported, _, err = e.ImportSessionContext(ctx, child, false)
+					imported, _, err = e.ImportSessionContext(ctx, id, false)
 					if err == nil {
-						child = imported
+						id = imported
 					}
-				} else if def, ok := parser.AgentByPrefix(child); !ok || def.Type != parser.AgentCodebuff || e.db.GetSessionFilePath(ctx, id) != e.db.GetSessionFilePath(ctx, child) {
-					err = e.syncSingleSessionContext(ctx, child, foreground, nil, nil)
+				} else if !refreshedPaths[e.db.GetSessionFilePath(ctx, id)] {
+					err = e.syncSingleSessionContext(ctx, id, foreground, nil, nil)
 				}
 			}
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					err = fmt.Errorf("referenced child %s has no available source", child)
-				}
-				refreshErr = errors.Join(refreshErr, err)
-				continue
+			if errors.Is(err, os.ErrNotExist) {
+				err = fmt.Errorf("referenced child %s has no available source", id)
 			}
-			visited[child] = true
-			pending = append(pending, child)
+			refreshErr = errors.Join(refreshErr, err)
+			refreshed[id] = true
 		}
-	}
-	return refreshErr
+		children, err := e.db.GetChildSessions(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		references, err := e.db.SubagentChildSessionIDs(ctx, []string{id})
+		if err != nil {
+			return nil, err
+		}
+		known := make(map[string]bool, len(children))
+		for _, child := range children {
+			known[child.ID] = true
+		}
+		for _, ref := range references {
+			if !known[ref] {
+				children = append(children, db.Session{ID: ref, RelationshipType: "subagent"})
+			}
+		}
+		return children, nil
+	})
+	return errors.Join(refreshErr, walkErr)
 }

@@ -536,6 +536,9 @@ func (b *directBackend) Sync(
 	if in.Subagents && in.ID == "" {
 		return nil, errors.New("sync: subagents requires id")
 	}
+	if in.Foreground && in.ID == "" {
+		return nil, errors.New("sync: foreground requires id")
+	}
 
 	syncSingle := b.engine.SyncSingleSessionContext
 	syncCombined := b.engine.SyncSessionWithSubagentsContext

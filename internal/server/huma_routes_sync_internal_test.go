@@ -1555,13 +1555,13 @@ func TestHumaSyncSessionRouteIsNotWriteTimeoutWrapped(t *testing.T) {
 		t, 10*time.Millisecond,
 		withHandlerDelay(100*time.Millisecond),
 	)
-	w := serveJSON(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/sync",
-		map[string]any{})
-
-	resp := w.Result()
-	defer resp.Body.Close()
-	assert.False(t, isTimeoutResponse(t, resp))
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	for _, body := range []map[string]any{{}, {"path": "session.jsonl", "foreground": true}} {
+		w := serveJSON(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/sync", body)
+		resp := w.Result()
+		assert.False(t, isTimeoutResponse(t, resp))
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		require.NoError(t, resp.Body.Close())
+	}
 }
 
 func TestHumaTriggerSyncLocalNoSyncResyncsStaleDB(t *testing.T) {

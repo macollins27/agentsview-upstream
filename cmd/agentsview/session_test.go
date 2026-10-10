@@ -202,6 +202,8 @@ func newRemoteUsageServer(
 		}
 		reqs.RequestPath = append(reqs.RequestPath, r.URL.Path)
 		switch r.URL.Path {
+		case "/api/v1/session-ids/resolve":
+			writeJSONResponse(w, fmt.Sprintf(`{"ids":[%q],"raw_suffix":true}`, spec.canonicalID))
 		case "/api/v1/sync":
 			assert.Equal(t, http.MethodPost, r.Method)
 			assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
@@ -1570,31 +1572,6 @@ func TestSessionUsage_NoSyncLocalAttributionAndMissingData(t *testing.T) {
 	}
 }
 
-func TestSessionUsage_ServerFlagRejectsCombinedUsageFromOlderDaemon(
-	t *testing.T,
-) {
-	newAgentDataDir(t)
-
-	ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{
-		canonicalID: "remote-session",
-		apiVersion:  5,
-	})
-	cmd := sessionUsageCommand(t,
-		"session", "usage", "remote-session", "--server", ts.URL, "--no-sync")
-
-	out, code, err := sessionUsageDataForCommand(cmd, "remote-session")
-
-	require.Error(t, err)
-	assert.Nil(t, out)
-	assert.Equal(t, tokenUseExitErr, code)
-	assert.Contains(t, err.Error(),
-		"does not support combined subagent usage")
-	assert.Contains(t, err.Error(), "--own-only")
-	assert.Equal(t, []string{"/api/v1/version"}, reqs.RequestPath)
-	assert.Empty(t, reqs.SyncInput.ID)
-	assert.Empty(t, reqs.UsagePath)
-}
-
 func TestSessionUsage_ServerFlagOwnOnlySkipsSubagents(t *testing.T) {
 	for _, noSync := range []bool{false, true} {
 		t.Run(fmt.Sprintf("no_sync_%v", noSync), func(t *testing.T) {
@@ -1626,18 +1603,29 @@ func TestSessionUsage_ServerFlagOwnOnlySkipsSubagents(t *testing.T) {
 }
 
 func TestSessionUsage_ServerFlagRejectsOlderRefresh(t *testing.T) {
-	for _, ownOnly := range []bool{false, true} {
-		t.Run(fmt.Sprintf("own_only_%v", ownOnly), func(t *testing.T) {
+	for _, tc := range []struct {
+		ownOnly, noSync bool
+		api             int
+		message         string
+	}{{false, true, 5, "combined subagent usage"}, {false, false, 10, "foreground session refresh"}, {true, false, 10, "foreground session refresh"}} {
+		t.Run(fmt.Sprintf("own_only_%v/no_sync_%v", tc.ownOnly, tc.noSync), func(t *testing.T) {
 			newAgentDataDir(t)
-			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "remote-session", apiVersion: 10})
+			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "remote-session", apiVersion: tc.api})
 			args := []string{"session", "usage", "remote-session", "--server", ts.URL}
-			if ownOnly {
+			if tc.ownOnly {
 				args = append(args, "--own-only")
 			}
+			if tc.noSync {
+				args = append(args, "--no-sync")
+			}
 			out, code, err := sessionUsageDataForCommand(sessionUsageCommand(t, args...), "remote-session")
-			require.ErrorContains(t, err, "does not support foreground session refresh")
-			assert.Contains(t, err.Error(), "upgrade or restart")
-			assert.Contains(t, err.Error(), "--no-sync")
+			require.ErrorContains(t, err, "does not support "+tc.message)
+			if tc.noSync {
+				assert.Contains(t, err.Error(), "--own-only")
+			} else {
+				assert.Contains(t, err.Error(), "upgrade or restart")
+				assert.Contains(t, err.Error(), "--no-sync")
+			}
 			assert.Nil(t, out)
 			assert.Equal(t, tokenUseExitErr, code)
 			assert.Equal(t, []string{"/api/v1/version"}, reqs.RequestPath)
@@ -1940,6 +1928,10 @@ func sessionUsageRuntimeServerWithMachines(
 	) {
 		if r.URL.Path == "/api/ping" {
 			ping.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/api/v1/session-ids/resolve" {
+			writeJSONResponse(w, `{"ids":[],"raw_suffix":true}`)
 			return
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sync" && r.URL.Query().Get("startup_only") == "true" {

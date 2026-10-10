@@ -508,7 +508,7 @@ func (e *Engine) syncS3SubagentTranscriptsContext(
 			file.Project = parentProject
 		}
 		preserved, sourceSessionsChanged, err := e.processAndWriteSessionFile(
-			ctx, file, childID,
+			ctx, file, childID, nil,
 		)
 		sessionsChanged = sessionsChanged || sourceSessionsChanged
 		if err != nil {

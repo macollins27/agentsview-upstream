@@ -731,12 +731,16 @@ func TestDirectBackend_Sync_BothPathAndID(t *testing.T) {
 	engine := sync.NewEngine(t.Context(), d, sync.EngineConfig{Ephemeral: true})
 	svc := service.NewDirectBackend(d, engine)
 
-	_, err := svc.Sync(t.Context(), service.SyncInput{
-		Path: "/tmp/session.jsonl",
-		ID:   "abc123",
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "only one of path or id allowed")
+	for _, tc := range []struct {
+		input   service.SyncInput
+		message string
+	}{
+		{service.SyncInput{Path: "/tmp/session.jsonl", ID: "abc123"}, "only one of path or id allowed"},
+		{service.SyncInput{Path: "/tmp/session.jsonl", Foreground: true}, "foreground requires id"},
+	} {
+		_, err := svc.Sync(t.Context(), tc.input)
+		require.ErrorContains(t, err, tc.message)
+	}
 }
 
 func TestDirectBackend_Sync_NilEngineIsReadOnly(t *testing.T) {
