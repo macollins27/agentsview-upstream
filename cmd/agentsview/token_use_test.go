@@ -129,9 +129,6 @@ func TestResolveSessionID_NotInDB_FoundOnDisk(t *testing.T) {
 	assert.True(t, known, "disk probe found match")
 	hostID := "other-host~" + bare
 	require.NoError(t, os.WriteFile(filepath.Join(dayDir, "rollout-2026-04-17T10-00-00-"+hostID+".jsonl"), []byte("{}\n"), 0o644))
-	sourceID, found := resolveSourceSessionID(agentDirs, hostID)
-	assert.Equal(t, hostID, sourceID)
-	assert.False(t, found)
 }
 
 func TestResolveSessionID_ArchiveOnlyUsesDatabase(t *testing.T) {

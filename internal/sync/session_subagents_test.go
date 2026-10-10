@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"database/sql"
 	"io"
 	"os"
@@ -20,7 +21,8 @@ func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
 	for _, tc := range []struct {
 		path        string
 		firstImport bool
-	}{{"missing.jsonl", false}, {"s3://bucket/project/parent.jsonl", false}, {"new-child", true}} {
+		cancelWait  bool
+	}{{"missing.jsonl", false, false}, {"s3://bucket/project/parent.jsonl", false, false}, {"new-child", true, false}, {"cancel-new-child", true, true}} {
 		t.Run(tc.path, func(t *testing.T) {
 			database := openTestDB(t)
 			path, childPath := tc.path, "archived-child.jsonl"
@@ -54,7 +56,9 @@ func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
 				return []string{childPath}
 			}
 			done := make(chan error, 1)
-			go func() { done <- engine.TrySyncSessionWithSubagentsContext(t.Context(), "parent") }()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			go func() { done <- engine.TrySyncSessionWithSubagentsContext(ctx, "parent") }()
 			select {
 			case <-locked:
 			case <-time.After(30 * time.Second):
@@ -62,6 +66,20 @@ func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
 			}
 			if tc.firstImport {
 				assert.Never(t, func() bool { return len(done) > 0 }, 100*time.Millisecond, 10*time.Millisecond)
+				if tc.cancelWait {
+					defer engine.syncMu.Unlock()
+					cancel()
+					select {
+					case err := <-done:
+						require.ErrorIs(t, err, context.Canceled)
+					case <-time.After(time.Second):
+						require.FailNow(t, "cancelled import still owns a writer wait")
+					}
+					child, err := database.GetSession(t.Context(), "agent-child")
+					require.NoError(t, err)
+					assert.Nil(t, child)
+					return
+				}
 				engine.syncMu.Unlock()
 				require.NoError(t, <-done)
 				child, err := database.GetSession(t.Context(), "agent-child")

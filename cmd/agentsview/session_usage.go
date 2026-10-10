@@ -108,7 +108,7 @@ func sessionUsageDataForCommand(
 				return nil, tokenUseExitErr, err
 			}
 		}
-		return httpSessionUsageData(ctx, remote, token, query, false)
+		return httpSessionUsageData(ctx, remote, token, query, false, false)
 	}
 	cfg, err := config.LoadPFlags(cmd.Flags())
 	if err != nil {
@@ -175,24 +175,31 @@ func httpSessionUsageData(
 	baseURL string,
 	token string,
 	query sessionUsageQuery,
-	allowImport bool,
+	localDaemon, allowImport bool,
 ) (*sessionUsageOutput, int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	sessionID := query.SessionID
 	backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
-	resolvedID, err := resolveServiceSessionID(
-		ctx, backend, sessionID,
-	)
+	var resolvedID string
+	var err error
+	if localDaemon {
+		resolvedID, err = resolveArchivedSessionID(ctx, backend, sessionID)
+	} else {
+		resolvedID, err = resolveServiceSessionID(ctx, backend, sessionID)
+	}
 	sourceOnly := false
 	if errors.Is(err, errSessionNotFound) && !query.NoSync && allowImport {
 		resolvedID, sourceOnly, err = sessionID, true, nil
 	}
 	if err == nil && !query.NoSync {
+		progress, finish := newUsageProgressPrinter(os.Stderr)
+		progress("Refreshing session usage; this may wait for active maintenance. Ctrl+C to cancel")
 		detail, syncErr := backend.Sync(ctx, service.SyncInput{
 			ID: resolvedID, Subagents: !query.OwnOnly, Foreground: true,
 		})
+		finish()
 		if syncErr != nil {
 			if sourceOnly {
 				if errors.Is(syncErr, os.ErrNotExist) {
@@ -339,7 +346,11 @@ func storeSessionUsageData(
 func resolveStoreSessionID(
 	ctx context.Context, store db.Store, sessionID string,
 ) (string, error) {
-	matches, err := store.FindSessionIDsByRawSuffix(
+	return resolveArchivedSessionID(ctx, service.NewReadOnlyBackend(store), sessionID)
+}
+
+func resolveArchivedSessionID(ctx context.Context, backend service.SessionService, sessionID string) (string, error) {
+	matches, err := backend.FindSessionIDsByRawSuffix(
 		ctx, sessionID, tokenUseResolveMatchLimit,
 	)
 	if err != nil {
@@ -359,7 +370,7 @@ func resolveStoreSessionID(
 		return matches[0], nil
 	}
 	return resolveServiceSessionID(
-		ctx, service.NewReadOnlyBackend(store), sessionID,
+		ctx, backend, sessionID,
 	)
 }
 

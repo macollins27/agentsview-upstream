@@ -224,7 +224,7 @@ func (b daemonArchiveQueryBackend) SessionUsage(
 	ctx context.Context,
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
-	return httpSessionUsageData(ctx, b.tr.URL, b.authToken, query, true)
+	return httpSessionUsageData(ctx, b.tr.URL, b.authToken, query, true, !b.tr.ReadOnly)
 }
 
 func (b daemonArchiveQueryBackend) MachineLabels(

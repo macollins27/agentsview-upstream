@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -144,16 +145,22 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 	const rawID = "a1b2c3d4-1111-4222-8333-444455556666"
 	for _, tc := range []struct {
-		id         string
-		ownOnly    bool
-		noSync     bool
-		freebuff   bool
-		archived   bool
-		stale      bool
-		direct     bool
-		busy       bool
-		vibe       int
-		unarchived bool
+		id           string
+		ownOnly      bool
+		noSync       bool
+		freebuff     bool
+		codebuff     bool
+		ambiguous    bool
+		readOnly     bool
+		lookupFail   bool
+		codexTree    bool
+		missingChild bool
+		archived     bool
+		stale        bool
+		direct       bool
+		busy         bool
+		vibe         int
+		unarchived   bool
 	}{
 		{id: "codex:" + rawID, stale: true, direct: true},
 		{id: "codex:" + rawID, stale: true, archived: true, direct: true},
@@ -165,6 +172,13 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 		{id: "vibe:session_20260616_083518_abc123", vibe: 1},
 		{id: "vibe:session_20260616_083518_abc123", vibe: 1, unarchived: true},
 		{id: "missing-session"},
+		{id: "missing-session", readOnly: true},
+		{id: "hermes:" + rawID, lookupFail: true},
+		{id: "2026-07-15T20-01-32.065Z", codebuff: true},
+		{id: "2026-07-15T20-01-32.065Z", freebuff: true},
+		{id: "2026-07-15T20-01-32.065Z", codebuff: true, ambiguous: true},
+		{id: "codex:" + rawID, codexTree: true},
+		{id: "codex:" + rawID, codexTree: true, missingChild: true},
 		{id: "codex:" + rawID},
 		{id: "codex:" + rawID, ownOnly: true},
 		{id: "freebuff:project-a:2026-07-15T20-01-32.065Z", freebuff: true},
@@ -179,14 +193,40 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				AddCodexMeta("2026-05-04T14:00:00Z", rawID, "/home/user/code/api", "codex_cli_rs").
 				AddCodexMessage("2026-05-04T14:00:01Z", "user", "hello").String()
 			require.NoError(t, os.WriteFile(filepath.Join(root, "rollout-2026-05-04T14-00-00-"+rawID+".jsonl"), []byte(content), 0o644))
+			if tc.codexTree {
+				ids := []string{rawID, "b1b2c3d4-1111-4222-8333-444455556666", "c1b2c3d4-1111-4222-8333-444455556666"}
+				for i, id := range ids {
+					if tc.missingChild && i == len(ids)-1 {
+						continue
+					}
+					transcript := testjsonl.NewSessionBuilder().AddCodexMeta("2026-05-04T14:00:00Z", id, "/repo", "codex").AddCodexMessage("2026-05-04T14:00:01Z", "user", "hello").String()
+					if i+1 < len(ids) {
+						transcript += "\n" + testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn", map[string]any{"message": "help"}, "2026-05-04T14:00:02Z") + "\n" + testjsonl.CodexFunctionCallOutputJSON("spawn", `{"agent_id":"`+ids[i+1]+`"}`, "2026-05-04T14:00:03Z")
+					}
+					transcript += "\n" + testjsonl.CodexMsgJSON("assistant", "done", "2026-05-04T14:00:04Z") + "\n" + testjsonl.CodexTokenCountJSON("2026-05-04T14:00:05Z", 100, 10, 0)
+					require.NoError(t, os.WriteFile(filepath.Join(root, "rollout-2026-05-04T14-00-00-"+id+".jsonl"), []byte(transcript), 0o600))
+				}
+			}
 			expectedID := "codex:" + rawID
-			if tc.freebuff {
+			if tc.lookupFail {
+				blocked := filepath.Join(root, "\x00", ".hermes", "profiles")
+				cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentHermes: {blocked}}
+			}
+			if tc.freebuff || tc.codebuff {
 				cfg.AgentDirs[parser.AgentCodebuff] = []string{root}
 				dir := filepath.Join(root, "project-a", "chats", "2026-07-15T20-01-32.065Z")
 				require.NoError(t, os.MkdirAll(dir, 0o755))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "chat-messages.json"), []byte(`[{"id":"user-1","variant":"user","content":"Hello","timestamp":"10:00 AM"}]`), 0o644))
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "run-state.json"), []byte(`{"sessionState":{"mainAgentState":{"agentType":"base2-free-minimax-m3"}}}`), 0o644))
-				expectedID = tc.id
+				expectedID = "codebuff:project-a:2026-07-15T20-01-32.065Z"
+				if tc.freebuff {
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "run-state.json"), []byte(`{"sessionState":{"mainAgentState":{"agentType":"base2-free-minimax-m3"}}}`), 0o644))
+					expectedID = "freebuff:project-a:2026-07-15T20-01-32.065Z"
+				}
+				if tc.ambiguous {
+					other := filepath.Join(root, "project-b", "chats", tc.id)
+					require.NoError(t, os.MkdirAll(other, 0o755))
+					require.NoError(t, os.WriteFile(filepath.Join(other, "chat-messages.json"), []byte("[]"), 0o600))
+				}
 			}
 			var vibePath, metaPath string
 			if tc.vibe != 0 {
@@ -280,7 +320,7 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 					close(manualDone)
 				}()
 			}
-			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}
+			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL, ReadOnly: tc.readOnly}}
 			var out *sessionUsageOutput
 			var code int
 			var err error
@@ -303,7 +343,7 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 						default:
 							return false
 						}
-					}, 100*time.Millisecond, 10*time.Millisecond)
+					}, 1200*time.Millisecond, 10*time.Millisecond)
 					releaseWriter()
 				}
 				select {
@@ -328,6 +368,18 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				assert.NotContains(t, stderr, "session not found")
 				return
 			}
+			if tc.ambiguous || tc.lookupFail || tc.missingChild {
+				require.Error(t, err)
+				assert.Equal(t, tokenUseExitErr, code)
+				assert.NotContains(t, stderr, "session not found")
+				if tc.ambiguous {
+					assert.Contains(t, err.Error(), "ambiguous")
+				}
+				if tc.missingChild {
+					assert.Contains(t, err.Error(), "referenced child")
+				}
+				return
+			}
 			require.NoError(t, err)
 			if tc.id == "missing-session" {
 				assert.Equal(t, tokenUseExitNotFound, code)
@@ -338,12 +390,20 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 			if tc.stale || (tc.busy && tc.archived) {
 				assert.Contains(t, stderr, "warning: refresh incomplete; showing stored usage:")
 			}
+			if tc.busy && !tc.archived {
+				assert.Contains(t, stderr, "Refreshing session usage")
+				assert.Contains(t, stderr, "Ctrl+C to cancel")
+			}
 			if tc.noSync && !tc.archived {
 				assert.Nil(t, out)
 				assert.Equal(t, tokenUseExitNotFound, code)
 			} else {
 				require.NotNil(t, out, "refresh stderr: %s", stderr)
 				assert.Equal(t, expectedID, out.SessionID)
+				if tc.codexTree {
+					assert.Equal(t, 2, out.SubagentCount)
+					assert.Equal(t, 30, out.TotalOutputTokens)
+				}
 			}
 			if tc.archived {
 				session, err := database.GetSession(t.Context(), expectedID)
@@ -464,8 +524,13 @@ func TestDaemonSessionUsageImportsConfiguredS3Source(t *testing.T) {
 				objects[strings.TrimPrefix(root, "s3://bucket/")+"/project/unrelated.jsonl"] = body
 			}
 			var mu sync.Mutex
+			var unavailable atomic.Bool
 			fetched := []string{}
 			s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if unavailable.Load() {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
 				if r.URL.Query().Has("location") {
 					fmt.Fprint(w, `<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>`)
 					return
@@ -533,6 +598,23 @@ func TestDaemonSessionUsageImportsConfiguredS3Source(t *testing.T) {
 				assert.Equal(t, machine+"/raw/"+provider+"/project/"+filename, key)
 			}
 			assert.False(t, engine.StartupReconciled())
+			if tc.id == "shared-id" {
+				unavailable.Store(true)
+				entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+				go func() { done <- engine.RunExclusive(func() error { close(entered); <-release; return nil }) }()
+				<-entered
+				defer func() { close(release); require.NoError(t, <-done) }()
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				var repeat *sessionUsageOutput
+				warning := captureStderr(t, func() {
+					repeat, _, err = (daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}).SessionUsage(ctx, sessionUsageQuery{SessionID: tc.id, OwnOnly: true})
+				})
+				require.NoError(t, err)
+				require.NotNil(t, repeat)
+				assert.Equal(t, expected, repeat.SessionID)
+				assert.Contains(t, warning, "refresh incomplete")
+			}
 		})
 	}
 }

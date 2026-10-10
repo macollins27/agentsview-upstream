@@ -464,7 +464,7 @@ func (e *Engine) syncS3SubagentTranscriptsContext(
 	if !isClaudeFormatAgent(parentAgent) {
 		return fmt.Errorf("sync s3 subagent transcripts: unsupported parent agent %q", parentAgent)
 	}
-	if err := e.lockTargetedSync(foreground); err != nil {
+	if err := e.lockTargetedSync(ctx, foreground); err != nil {
 		return err
 	}
 	synced := false

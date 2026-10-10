@@ -108,6 +108,22 @@ type codebuffSourceSet struct {
 	singleFileSourceSet
 }
 
+func (s codebuffSourceSet) FindSource(ctx context.Context, req FindSourceRequest) (SourceRef, bool, error) {
+	if req.StoredFilePath == "" && req.FingerprintKey == "" && IsCodebuffTimestamp(req.RawSessionID) {
+		matches, err := FindCodebuffFreebuffMatchesContext(ctx, []CodebuffFamilyRoots{{Agent: AgentCodebuff, Roots: s.roots}}, req.RawSessionID)
+		if err != nil {
+			return SourceRef{}, false, err
+		}
+		if len(matches) > 1 {
+			return SourceRef{}, false, fmt.Errorf("ambiguous Codebuff timestamp %q: %v", req.RawSessionID, matches)
+		}
+		if len(matches) == 1 {
+			req.RawSessionID = matches[0].ProjectHint + ":" + req.RawSessionID
+		}
+	}
+	return s.singleFileSourceSet.FindSource(ctx, req)
+}
+
 // ComputeMultiFileStatHash implements parser.MultiFileStatHasher. The
 // digest is FNV-1a 64 over (size, mtime, ctime) tuples for
 // chat-messages.json plus its sibling companions run-state.json and
