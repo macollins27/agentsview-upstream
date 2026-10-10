@@ -2517,5 +2517,9 @@
   "tool_effectiveness_left_out": "Left out of the model's input",
   "tool_effectiveness_model_saw": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"model saw {countLabel} byte","countPlural=other":"model saw {countLabel} bytes"}}],
   "tool_effectiveness_open_session": "Open session",
-  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} message","countPlural=other":"{countLabel} messages"}}]
+  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} message","countPlural=other":"{countLabel} messages"}}],
+  "usage_all_projects": "All projects",
+  "usage_clear_selection": "Clear selection",
+  "usage_open_project": "Open",
+  "usage_loading": "Loading..."
 }

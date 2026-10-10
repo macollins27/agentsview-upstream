@@ -2519,5 +2519,9 @@
   "tool_effectiveness_left_out": "Modelin girişindən kənarda qalanlar",
   "tool_effectiveness_model_saw": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"model {countLabel} bayt gördü","countPlural=other":"model {countLabel} bayt gördü"}}],
   "tool_effectiveness_open_session": "Sessiyanı aç",
-  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} mesaj","countPlural=other":"{countLabel} mesaj"}}]
+  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} mesaj","countPlural=other":"{countLabel} mesaj"}}],
+  "usage_all_projects": "Bütün layihələr",
+  "usage_clear_selection": "Seçimi təmizlə",
+  "usage_open_project": "Aç",
+  "usage_loading": "Yüklənir..."
 }

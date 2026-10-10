@@ -2519,5 +2519,9 @@
   "tool_effectiveness_left_out": "Omitido de la entrada del modelo",
   "tool_effectiveness_model_saw": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"el modelo vio {countLabel} byte","countPlural=other":"el modelo vio {countLabel} bytes","countPlural=many":"el modelo vio {countLabel} bytes"}}],
   "tool_effectiveness_open_session": "Abrir sesión",
-  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} mensaje","countPlural=other":"{countLabel} mensajes"}}]
+  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} mensaje","countPlural=other":"{countLabel} mensajes"}}],
+  "usage_all_projects": "Todos los proyectos",
+  "usage_clear_selection": "Borrar selección",
+  "usage_open_project": "Abrir",
+  "usage_loading": "Cargando..."
 }

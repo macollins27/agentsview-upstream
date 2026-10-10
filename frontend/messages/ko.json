@@ -2434,5 +2434,9 @@
   "tool_effectiveness_left_out": "모델 입력에서 생략됨",
   "tool_effectiveness_model_saw": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"모델이 본 양 {countLabel}바이트","countPlural=other":"모델이 본 양 {countLabel}바이트"}}],
   "tool_effectiveness_open_session": "세션 열기",
-  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"메시지 {countLabel}개","countPlural=other":"메시지 {countLabel}개"}}]
+  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"메시지 {countLabel}개","countPlural=other":"메시지 {countLabel}개"}}],
+  "usage_all_projects": "모든 프로젝트",
+  "usage_clear_selection": "선택 해제",
+  "usage_open_project": "열기",
+  "usage_loading": "불러오는 중..."
 }

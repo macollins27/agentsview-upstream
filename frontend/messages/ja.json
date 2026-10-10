@@ -2505,5 +2505,9 @@
   "tool_effectiveness_left_out": "モデルへの入力から省略",
   "tool_effectiveness_model_saw": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"モデルが見たのは {countLabel} バイト","countPlural=other":"モデルが見たのは {countLabel} バイト"}}],
   "tool_effectiveness_open_session": "セッションを開く",
-  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} 件のメッセージ","countPlural=other":"{countLabel} 件のメッセージ"}}]
+  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} 件のメッセージ","countPlural=other":"{countLabel} 件のメッセージ"}}],
+  "usage_all_projects": "すべてのプロジェクト",
+  "usage_clear_selection": "選択をクリア",
+  "usage_open_project": "開く",
+  "usage_loading": "読み込み中..."
 }

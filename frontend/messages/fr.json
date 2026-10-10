@@ -2516,5 +2516,9 @@
   "tool_effectiveness_left_out": "Retiré de l'entrée du modèle",
   "tool_effectiveness_model_saw": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"le modèle a vu {countLabel} octet","countPlural=other":"le modèle a vu {countLabel} octets","countPlural=many":"le modèle a vu {countLabel} octets"}}],
   "tool_effectiveness_open_session": "Ouvrir la session",
-  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} message","countPlural=other":"{countLabel} messages"}}]
+  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} message","countPlural=other":"{countLabel} messages"}}],
+  "usage_all_projects": "Tous les projets",
+  "usage_clear_selection": "Effacer la sélection",
+  "usage_open_project": "Ouvrir",
+  "usage_loading": "Chargement..."
 }

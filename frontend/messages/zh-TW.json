@@ -2434,5 +2434,9 @@
   "tool_effectiveness_left_out": "未包含在模型輸入中",
   "tool_effectiveness_model_saw": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"模型看到 {countLabel} 位元組","countPlural=other":"模型看到 {countLabel} 位元組"}}],
   "tool_effectiveness_open_session": "開啟工作階段",
-  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} 則訊息","countPlural=other":"{countLabel} 則訊息"}}]
+  "tool_effectiveness_message_count": [{"declarations":["input count","input countLabel","local countPlural = count: plural"],"selectors":["countPlural"],"match":{"countPlural=one":"{countLabel} 則訊息","countPlural=other":"{countLabel} 則訊息"}}],
+  "usage_all_projects": "所有專案",
+  "usage_clear_selection": "清除選擇",
+  "usage_open_project": "開啟",
+  "usage_loading": "正在載入..."
 }
