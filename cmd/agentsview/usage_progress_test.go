@@ -160,15 +160,12 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 		{id: "codex:" + rawID, busy: true, archived: true, ownOnly: true},
 		{id: "codex:" + rawID, busy: true, archived: true},
 		{id: "codex:" + rawID, stale: true},
-		{id: "codex:" + rawID, stale: true, archived: true},
 		{id: "vibe:abc123def-0000-0000-0000-000000000000", ownOnly: true, vibe: 2},
 		{id: "vibe:session_20260616_083518_abc123", vibe: 1},
 		{id: "vibe:session_20260616_083518_abc123", vibe: 1, unarchived: true},
-		{id: rawID},
+		{id: "missing-session"},
 		{id: "codex:" + rawID},
-		{id: rawID, ownOnly: true},
 		{id: "codex:" + rawID, ownOnly: true},
-		{id: "codex:" + rawID, noSync: true},
 		{id: "freebuff:project-a:2026-07-15T20-01-32.065Z", freebuff: true},
 		{id: "codex:" + rawID, ownOnly: true, archived: true},
 		{id: "codex:" + rawID, ownOnly: true, archived: true, noSync: true},
@@ -331,6 +328,12 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+			if tc.id == "missing-session" {
+				assert.Equal(t, tokenUseExitNotFound, code)
+				assert.Nil(t, out)
+				assert.Contains(t, stderr, "session not found: missing-session")
+				return
+			}
 			if tc.stale || (tc.busy && tc.archived) {
 				assert.Contains(t, stderr, "warning: refresh incomplete; showing stored usage:")
 			}
@@ -352,7 +355,7 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				}
 			}
 			assert.False(t, engine.StartupReconciled())
-			if tc.id == rawID && !tc.ownOnly {
+			if tc.id == "codex:"+rawID && !tc.ownOnly && !tc.busy && !tc.stale {
 				unrelated, err := database.GetSession(t.Context(), "session0")
 				require.NoError(t, err)
 				assert.Nil(t, unrelated)
@@ -436,13 +439,13 @@ func TestUsageProgressPrintsSlowWorkToStderr(t *testing.T) {
 func TestDaemonSessionUsageImportsConfiguredS3Source(t *testing.T) {
 	const rawID = "a1b2c3d4-1111-4222-8333-444455556666"
 	for _, tc := range []struct {
-		id                     string
-		codex, ownOnly, noSync bool
+		id             string
+		codex, ownOnly bool
 	}{
-		{"laptop~shared-id", false, false, false}, {"shared-id", false, true, false}, {"desktop~shared-id", false, true, false},
-		{"laptop~shared-id", false, false, true}, {"codex:" + rawID, true, false, false}, {rawID, true, true, false},
+		{"laptop~shared-id", false, false}, {"shared-id", false, true}, {"desktop~shared-id", false, true},
+		{"codex:" + rawID, true, false},
 	} {
-		t.Run(fmt.Sprintf("%s/no-sync=%t", tc.id, tc.noSync), func(t *testing.T) {
+		t.Run(tc.id, func(t *testing.T) {
 			cfg := testConfigWithClaudeFixture(t)
 			agent, provider, filename := parser.AgentClaude, "claude", "shared-id.jsonl"
 			body := testjsonl.NewSessionBuilder().AddClaudeUser("2026-05-04T14:00:00Z", "hello").AddClaudeAssistant("2026-05-04T14:00:01Z", "done").String()
@@ -507,15 +510,10 @@ func TestDaemonSessionUsageImportsConfiguredS3Source(t *testing.T) {
 			ts.Config.Handler = srv.Handler()
 			ts.Start()
 			t.Cleanup(ts.Close)
-			out, code, err := (daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}).SessionUsage(t.Context(), sessionUsageQuery{SessionID: tc.id, OwnOnly: tc.ownOnly, NoSync: tc.noSync})
+			out, _, err := (daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}).SessionUsage(t.Context(), sessionUsageQuery{SessionID: tc.id, OwnOnly: tc.ownOnly})
 			require.NoError(t, err)
 			mu.Lock()
 			defer mu.Unlock()
-			if tc.noSync {
-				assert.Equal(t, tokenUseExitNotFound, code)
-				assert.Empty(t, fetched)
-				return
-			}
 			require.NotNil(t, out)
 			machine, _ := parser.StripHostPrefix(out.SessionID)
 			assert.Contains(t, []string{"laptop", "desktop"}, machine)

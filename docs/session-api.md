@@ -585,11 +585,10 @@ finishes. Re-run `session sync <id>` with the specific session you want; the
   required rebuild and return stored usage promptly when the writer is busy.
   First imports wait for the writer. Remote usage refresh requires API 11; `--no-sync` keeps
   archived reads available on older servers.
-- Local clients replace an older-API daemon before reading or writing the
-  archive, including daemons with the same development version. Replacement
-  can interrupt active daemon work. Read-only
-  daemons, newer API or data versions, disabled automatic startup, and
-  long-running clients retain their existing replacement restrictions.
+- A daemon with the same binary version and an older API requires a manual
+  restart. Run `agentsview daemon restart` after active daemon work completes,
+  or use `--server URL --no-sync` for archived usage reads. Binary upgrades retain their
+  existing automatic replacement behavior.
 - If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
   (read-only), sync refuses with a clear error.
 - If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI runs the sync in-process only

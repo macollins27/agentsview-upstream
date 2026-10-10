@@ -456,7 +456,7 @@ func shouldReplaceIncompatibleDaemonRuntime(
 	if rt == nil || rt.ReadOnly || rt.API > daemonAPIVersion {
 		return false
 	}
-	if rt.API >= daemonAPIVersion && !shouldReplaceDaemonRuntime(rt, currentVersion) {
+	if !shouldReplaceDaemonRuntime(rt, currentVersion) {
 		return false
 	}
 	// Restarting replaces the HTTP API, but cannot downgrade the archive.

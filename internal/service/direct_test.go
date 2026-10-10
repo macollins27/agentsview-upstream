@@ -1077,6 +1077,9 @@ func TestDirectBackend_Sync_VibeFallbackIDReturnsPromotedSession(t *testing.T) {
 	stale, err := d.GetSession(t.Context(), fallbackID)
 	require.NoError(t, err)
 	assert.Nil(t, stale)
+	manual, err := svc.Sync(t.Context(), service.SyncInput{ID: fallbackID, Subagents: true})
+	require.NoError(t, err)
+	assert.Nil(t, manual)
 }
 
 // TestDirectBackend_Sync_VibeCanonicalIDResolvesFallbackAfterMetaRemoved

@@ -700,7 +700,7 @@ func TestEnsureTransport_ReadIntentPreservesExplicitNoSyncWhenRestartingIncompat
 	assert.Equal(t, transportHTTP, tr.Mode)
 }
 
-func TestEnsureTransport_ReadIntentRestartsIncompatibleOlderDaemon(t *testing.T) {
+func TestEnsureTransport_ReadIntentPreservesSameVersionOlderAPIDaemon(t *testing.T) {
 	dir := daemonRuntimeDir(t)
 	host, port := testPingServer(t)
 	rec := incompatibleRuntimeRecord(host, port, "dev", true)
@@ -722,13 +722,11 @@ func TestEnsureTransport_ReadIntentRestartsIncompatibleOlderDaemon(t *testing.T)
 	})
 
 	cfg := config.Config{DataDir: dir}
-	tr, err := ensureTransport(
+	_, err := ensureTransport(
 		&cfg, transportIntentRead, 100*time.Millisecond,
 	)
-	require.NoError(t, err)
-	assert.True(t, started)
-	assert.Equal(t, transportHTTP, tr.Mode)
-	assert.Equal(t, "http://127.0.0.1:23456", tr.URL)
+	require.Error(t, err)
+	assert.False(t, started)
 }
 
 func TestEnsureTransport_ArchiveWriteRestartsIncompatibleDaemonAfterExternalStartupAbort(
@@ -882,7 +880,7 @@ func TestShouldReplaceIncompatibleDaemonRuntimeSameVersion(t *testing.T) {
 		api, data      int
 		readOnly, want bool
 	}{
-		{"older API", daemonAPIVersion - 1, db.CurrentDataVersion(), false, true},
+		{"older API", daemonAPIVersion - 1, db.CurrentDataVersion(), false, false},
 		{"current API", daemonAPIVersion, db.CurrentDataVersion(), false, false},
 		{"newer API", daemonAPIVersion + 1, db.CurrentDataVersion(), false, false},
 		{"newer data", daemonAPIVersion - 1, db.CurrentDataVersion() + 1, false, false},

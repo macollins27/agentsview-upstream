@@ -149,7 +149,7 @@ func requireRemoteUsageSupport(
 		return err
 	}
 	if !query.NoSync && capabilities.APIVersion < server.ForegroundSessionSyncAPIVersion {
-		return fmt.Errorf("server API version %d does not support foreground session refresh; upgrade or restart the server, or pass --no-sync", capabilities.APIVersion)
+		return fmt.Errorf("server API version %d does not support foreground session refresh; upgrade or restart the server after active work completes, or pass --no-sync", capabilities.APIVersion)
 	}
 	if !query.OwnOnly && capabilities.APIVersion < server.SubagentUsageAPIVersion {
 		return fmt.Errorf(
@@ -195,6 +195,10 @@ func httpSessionUsageData(
 		})
 		if syncErr != nil {
 			if sourceOnly {
+				if errors.Is(syncErr, os.ErrNotExist) {
+					fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
+					return nil, tokenUseExitNotFound, nil
+				}
 				return nil, tokenUseExitErr, fmt.Errorf("refresh session: %w", syncErr)
 			}
 			if !errors.Is(syncErr, db.ErrReadOnly) {

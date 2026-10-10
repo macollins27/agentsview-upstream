@@ -582,6 +582,9 @@ func (b *directBackend) Sync(
 		if err != nil {
 			return nil, err
 		}
+		if in.Subagents && !in.Foreground {
+			return b.Get(ctx, in.ID)
+		}
 	} else {
 		b.engine.SyncPaths([]string{path})
 		resolved, err := b.resolveSessionIDByPath(ctx, path)

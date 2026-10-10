@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"reflect"
@@ -1089,6 +1090,9 @@ func (s *Server) humaSyncSession(
 
 	detail, err := s.sessionSyncService(ctx).Sync(ctx, in.Body)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, apiError(http.StatusNotFound, err.Error())
+		}
 		if errors.Is(err, context.Canceled) {
 			return nil, nil
 		}

@@ -20202,7 +20202,7 @@ func (e *Engine) findSessionSource(ctx context.Context, requestedID string) (str
 			}
 		}
 	}
-	return "", parser.DiscoveredFile{}, fmt.Errorf("source file not found for %s", requestedID)
+	return "", parser.DiscoveredFile{}, fmt.Errorf("source file not found for %s: %w", requestedID, os.ErrNotExist)
 }
 
 // FindSourceFile locates the original source file for a

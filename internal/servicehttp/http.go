@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -537,6 +538,9 @@ func (b *httpBackend) Sync(
 		return nil, err
 	}
 	detail := response.JSON200
+	if response.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("sync: session %s: %w", in.ID, fs.ErrNotExist)
+	}
 	if response.StatusCode == http.StatusNotImplemented {
 		return nil, fmt.Errorf("sync: daemon at %s: %w", b.baseURL, db.ErrReadOnly)
 	}
