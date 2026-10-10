@@ -1711,6 +1711,9 @@ agentsview session usage <id> --own-only # exclude subagent transcripts
 spawned it, so a parent that delegated most of its work still reports the full
 cost. `--own-only` restores the older own-session output.
 
+While a worker-backed daemon needs an archive rebuild, session sync requests
+return HTTP 409. Run `agentsview resync` to rebuild before retrying.
+
 `session search` supports substring (default), `--regex`, `--fts`, `--semantic`,
 and `--hybrid` modes. Repeatable `--exclude-session <id>` drops matches from
 those sessions before `--limit`. Semantic and hybrid results can be scoped with

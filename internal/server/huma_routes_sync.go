@@ -355,8 +355,7 @@ func (s *Server) rejectStaleArchiveForSync() error {
 	return huma.ErrorWithHeaders(
 		apiError(
 			http.StatusConflict,
-			"archive data version changed; POST /api/v1/resync to rebuild the "+
-				"archive before syncing",
+			"archive data version changed; run agentsview resync or POST /api/v1/resync to rebuild the archive before syncing",
 		),
 		http.Header{ResyncRequiredHeader: []string{"true"}},
 	)

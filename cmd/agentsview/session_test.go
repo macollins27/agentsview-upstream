@@ -154,6 +154,8 @@ type remoteUsageSpec struct {
 	bearer        string          // if set, asserts Authorization: Bearer <bearer>
 	serverRunning bool            // include server_running:true in the usage body
 	usageBlock    <-chan struct{} // optional block before serving /usage
+	syncStatus    int
+	sourceOnly    bool
 }
 
 // remoteUsageRequests records what the fake usage server observed.
@@ -210,6 +212,10 @@ func newRemoteUsageServer(
 			writeJSONResponse(w, fmt.Sprintf(
 				`{"api_version":%d}`, spec.apiVersion))
 		case detailPath:
+			if spec.sourceOnly {
+				http.NotFound(w, r)
+				return
+			}
 			writeJSONResponse(w, detailJSON)
 		case "/api/v1/sessions/sync":
 			if !assert.Equal(t, http.MethodPost, r.Method) {
@@ -219,6 +225,11 @@ func newRemoteUsageServer(
 				return
 			}
 			if !assert.NoError(t, json.UnmarshalRead(r.Body, &reqs.SyncInput)) {
+				return
+			}
+			if spec.syncStatus != 0 {
+				w.WriteHeader(spec.syncStatus)
+				writeJSONResponse(w, `{"message":"archive data version changed; run agentsview resync"}`)
 				return
 			}
 			writeJSONResponse(w, detailJSON)
@@ -1613,10 +1624,10 @@ func TestSessionUsage_ServerFlagOwnOnlySkipsSubagents(t *testing.T) {
 	require.NotNil(t, out)
 	assert.Equal(t, "breakdown=true", reqs.UsageQuery,
 		"--own-only must not ask the daemon for subagent usage")
-	assert.Empty(t, reqs.SyncInput.ID,
-		"--own-only must not ask the daemon to refresh subagents")
+	assert.Equal(t, service.SyncInput{ID: "remote-session"}, reqs.SyncInput)
 	assert.Equal(t, []string{
 		"/api/v1/sessions/remote-session",
+		"/api/v1/sessions/sync",
 		"/api/v1/sessions/remote-session/usage",
 	}, reqs.RequestPath)
 	assert.Equal(t, tokenUseExitOK, code)
@@ -2178,14 +2189,7 @@ func TestSessionUsage_PGFlagResolvesColonBearingRawSessionID(t *testing.T) {
 	assert.Equal(t, 84, out.TotalOutputTokens)
 }
 
-// TestSessionSync_UnknownID_ReportsNoFilePath verifies that the
-// sync engine is plumbed in direct mode. No daemon running, no
-// sessions in DB — Execute returns an error whose message contains
-// "no file_path recorded" AND the missing id. Critically the
-// error must NOT be db.ErrReadOnly (that would mean the engine
-// was nil, i.e. direct-backend constructed without a real
-// sync.Engine as in the default newService path).
-func TestSessionSync_UnknownID_ReportsNoFilePath(t *testing.T) {
+func TestSessionSync_UnknownID_ReportsMissingSource(t *testing.T) {
 	newAgentDataDir(t)
 	t.Setenv("AGENTSVIEW_NO_DAEMON", "1")
 
@@ -2193,8 +2197,7 @@ func TestSessionSync_UnknownID_ReportsNoFilePath(t *testing.T) {
 		"session", "sync", "missing-id")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing-id")
-	assert.Contains(t, err.Error(), "no file_path recorded",
-		"error should come from directBackend.Sync validation, not ErrReadOnly")
+	assert.Contains(t, err.Error(), "source file not found")
 	assert.NotContains(t, err.Error(), "read-only",
 		"engine must be plumbed; got ErrReadOnly-style message: %v", err)
 }

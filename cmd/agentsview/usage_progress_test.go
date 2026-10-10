@@ -144,9 +144,11 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 	const rawID = "a1b2c3d4-1111-4222-8333-444455556666"
 	for _, tc := range []struct {
-		id      string
-		ownOnly bool
-		noSync  bool
+		id       string
+		ownOnly  bool
+		noSync   bool
+		freebuff bool
+		archived bool
 	}{
 		{id: rawID},
 		{id: "codex:" + rawID},
@@ -154,6 +156,10 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 		{id: "codex:" + rawID, ownOnly: true},
 		{id: rawID, noSync: true},
 		{id: "codex:" + rawID, noSync: true},
+		{id: "freebuff:project-a:2026-07-15T20-01-32.065Z", freebuff: true},
+		{id: "freebuff:project-a:2026-07-15T20-01-32.065Z", freebuff: true, ownOnly: true},
+		{id: "codex:" + rawID, ownOnly: true, archived: true},
+		{id: "codex:" + rawID, ownOnly: true, archived: true, noSync: true},
 	} {
 		t.Run(fmt.Sprintf("%s/own=%t/no-sync=%t", tc.id, tc.ownOnly, tc.noSync), func(t *testing.T) {
 			cfg := testConfigWithClaudeFixture(t)
@@ -163,11 +169,25 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				AddCodexMeta("2026-05-04T14:00:00Z", rawID, "/home/user/code/api", "codex_cli_rs").
 				AddCodexMessage("2026-05-04T14:00:01Z", "user", "hello").String()
 			require.NoError(t, os.WriteFile(filepath.Join(root, "rollout-2026-05-04T14-00-00-"+rawID+".jsonl"), []byte(content), 0o644))
+			expectedID := "codex:" + rawID
+			if tc.freebuff {
+				cfg.AgentDirs[parser.AgentCodebuff] = []string{root}
+				dir := filepath.Join(root, "project-a", "chats", "2026-07-15T20-01-32.065Z")
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "chat-messages.json"), []byte(`[{"id":"user-1","variant":"user","content":"Hello","timestamp":"10:00 AM"}]`), 0o644))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "run-state.json"), []byte(`{"sessionState":{"mainAgentState":{"agentType":"base2-free-minimax-m3"}}}`), 0o644))
+				expectedID = tc.id
+			}
 			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
 			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{
 				AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true,
 			})
 			t.Cleanup(engine.Close)
+			if tc.archived {
+				require.NoError(t, engine.SyncSingleSessionContext(t.Context(), expectedID))
+				content += "\n" + testjsonl.NewSessionBuilder().AddCodexMessage("2026-05-04T14:00:02Z", "assistant", "updated").String()
+				require.NoError(t, os.WriteFile(filepath.Join(root, "rollout-2026-05-04T14-00-00-"+rawID+".jsonl"), []byte(content), 0o644))
+			}
 			ts := httptest.NewUnstartedServer(nil)
 			cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
 			srv := server.New(cfg, database, engine)
@@ -177,17 +197,57 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}, agentDirs: cfg.AgentDirs}
 			out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: tc.id, OwnOnly: tc.ownOnly, NoSync: tc.noSync})
 			require.NoError(t, err)
-			if tc.noSync {
+			if tc.noSync && !tc.archived {
 				assert.Nil(t, out)
 				assert.Equal(t, tokenUseExitNotFound, code)
 			} else {
 				require.NotNil(t, out)
-				assert.Equal(t, "codex:"+rawID, out.SessionID)
+				assert.Equal(t, expectedID, out.SessionID)
+			}
+			if tc.archived {
+				session, err := database.GetSession(t.Context(), expectedID)
+				require.NoError(t, err)
+				require.NotNil(t, session)
+				if tc.noSync {
+					assert.Equal(t, 1, session.MessageCount)
+				} else {
+					assert.Equal(t, 2, session.MessageCount)
+				}
 			}
 			assert.False(t, engine.StartupReconciled())
 			unrelated, err := database.GetSession(t.Context(), "session0")
 			require.NoError(t, err)
 			assert.Nil(t, unrelated)
+		})
+	}
+}
+
+func TestDaemonSessionUsagePendingRebuild(t *testing.T) {
+	const rawID = "a1b2c3d4-1111-4222-8333-444455556666"
+	for _, sourceOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("source-only=%t", sourceOnly), func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(root, "rollout-2026-05-04T14-00-00-"+rawID+".jsonl"), []byte("{}"), 0o644))
+			ts, requests := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:" + rawID, sourceOnly: sourceOnly, syncStatus: http.StatusConflict})
+			var out *sessionUsageOutput
+			var code int
+			var err error
+			stderr := captureStderr(t, func() {
+				out, code, err = httpSessionUsageData(t.Context(), ts.URL, "", sessionUsageQuery{SessionID: "codex:" + rawID}, map[parser.AgentType][]string{parser.AgentCodex: {root}})
+			})
+			if sourceOnly {
+				require.ErrorContains(t, err, "agentsview resync")
+				assert.Equal(t, tokenUseExitErr, code)
+				assert.Nil(t, out)
+				assert.NotContains(t, stderr, "session not found")
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, out)
+				assert.Equal(t, 42, out.TotalOutputTokens)
+				assert.Contains(t, stderr, "warning: sync failed:")
+			}
+			assert.NotContains(t, requests.RequestPath, "/api/v1/resync")
+			assert.NotContains(t, requests.RequestPath, "/api/v1/sync")
 		})
 	}
 }

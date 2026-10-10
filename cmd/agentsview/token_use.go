@@ -97,14 +97,7 @@ func resolveSourceSessionID(agentDirs map[parser.AgentType][]string, input strin
 	// agent prefix, trust that interpretation first and strip
 	// before resolving the source (which rejects IDs with
 	// colons via IsValidSessionID).
-	for _, def := range parser.Registry {
-		if def.IDPrefix == "" ||
-			!agentHasDiskSourceLookup(def) {
-			continue
-		}
-		if !strings.HasPrefix(input, def.IDPrefix) {
-			continue
-		}
+	if def, ok := parser.AgentByPrefix(input); ok && agentHasDiskSourceLookup(def) {
 		bareID := strings.TrimPrefix(input, def.IDPrefix)
 		for _, dir := range agentDirs[def.Type] {
 			if findAgentSourceFile(def, dir, bareID) != "" {

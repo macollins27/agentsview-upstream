@@ -1065,8 +1065,8 @@ archive with a stale warning; scoped upgrades and schema repairs finish before
 the daemon serves requests.
 
 `session usage` and `token-use` refresh only the named session and its subagents,
-without starting or waiting for full startup ingestion. `--own-only` reads the
-named session's archived rows, importing its source if it isn't archived yet.
+without waiting for full startup ingestion. `--own-only` refreshes just the
+named session. A newly started daemon still runs deferred background ingestion.
 `usage statusline` completes pending startup ingestion before querying, including
 when a previous daily report started the daemon. Later statusline queries rely
 on the daemon's file watcher for source changes.

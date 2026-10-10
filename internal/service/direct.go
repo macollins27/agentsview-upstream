@@ -549,9 +549,10 @@ func (b *directBackend) Sync(
 	if path == "" {
 		storedPath := b.local.GetSessionFilePath(ctx, in.ID)
 		if storedPath == "" {
-			return nil, fmt.Errorf(
-				"sync: no file_path recorded for session %q", in.ID,
-			)
+			if err := b.engine.SyncSingleSessionContext(ctx, in.ID); err != nil {
+				return nil, err
+			}
+			return b.Get(ctx, in.ID)
 		}
 		// Visual Studio Copilot stores file_path as a
 		// <traceFile>#<conversationID> virtual key. Stripping it to the

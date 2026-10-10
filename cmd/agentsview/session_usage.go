@@ -188,11 +188,16 @@ func httpSessionUsageData(
 			resolvedID, sourceOnly, err = sourceID, true, nil
 		}
 	}
-	if err == nil && !query.NoSync && (!query.OwnOnly || sourceOnly) {
+	if err == nil && !query.NoSync {
 		if _, syncErr := backend.Sync(ctx, service.SyncInput{
-			ID: resolvedID, Subagents: true,
-		}); syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
-			fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
+			ID: resolvedID, Subagents: !query.OwnOnly,
+		}); syncErr != nil {
+			if sourceOnly {
+				return nil, tokenUseExitErr, fmt.Errorf("refresh session: %w", syncErr)
+			}
+			if !errors.Is(syncErr, db.ErrReadOnly) {
+				fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
+			}
 		}
 		if sourceOnly {
 			resolvedID, err = resolveServiceSessionID(ctx, backend, resolvedID)
