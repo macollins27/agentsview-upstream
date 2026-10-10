@@ -20846,7 +20846,7 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 		}
 	}
 
-	path := ""
+	var path string
 	if len(selected) > 0 {
 		path = selected[0].Path
 	} else {

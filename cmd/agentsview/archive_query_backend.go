@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -309,7 +310,7 @@ func (b localArchiveQueryBackend) SessionUsage(
 
 	if known && !b.skipFreshData && !query.NoSync {
 		if b.database.NeedsResync() {
-			refreshErr := fmt.Errorf("archive data version changed; run agentsview resync before refreshing session usage")
+			refreshErr := errors.New("archive data version changed; run agentsview resync before refreshing session usage")
 			archived, err := b.database.GetSession(ctx, resolvedID)
 			if err != nil {
 				return nil, tokenUseExitErr, err

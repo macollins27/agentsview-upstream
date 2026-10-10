@@ -17,7 +17,7 @@ import (
 func TestHTTPBackendSyncRejectsNullSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		assert.NoError(t, err)
 		assert.NotContains(t, string(body), "foreground")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("null"))

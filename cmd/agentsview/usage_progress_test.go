@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -239,10 +240,10 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				t.Cleanup(engine.Close)
 				if !tc.direct {
 					options = append(options, server.WithLocalSyncRunner(func(context.Context, func(agentsync.Progress)) (agentsync.SyncStats, error) {
-						t.Fatal("session usage must not start global sync")
+						assert.Fail(t, "session usage must not start global sync")
 						return agentsync.SyncStats{}, nil
 					}), server.WithLocalResyncRunner(func(context.Context, func(agentsync.Progress)) (agentsync.SyncStats, error) {
-						t.Fatal("session usage must not start archive rebuild")
+						assert.Fail(t, "session usage must not start archive rebuild")
 						return agentsync.SyncStats{}, nil
 					}))
 				}
@@ -308,7 +309,7 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 				select {
 				case <-done:
 				case <-time.After(30 * time.Second):
-					t.Fatal("usage waited for an unrelated sync")
+					require.FailNow(t, "usage waited for an unrelated sync")
 				}
 			})
 			if manualDone != nil {
@@ -442,7 +443,9 @@ func TestDaemonSessionUsageImportsConfiguredS3Source(t *testing.T) {
 		id             string
 		codex, ownOnly bool
 	}{
-		{"laptop~shared-id", false, false}, {"shared-id", false, true}, {"desktop~shared-id", false, true},
+		{"laptop~shared-id", false, false},
+		{"shared-id", false, true},
+		{"desktop~shared-id", false, true},
 		{"codex:" + rawID, true, false},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
@@ -484,7 +487,7 @@ func TestDaemonSessionUsageImportsConfiguredS3Source(t *testing.T) {
 					fmt.Fprint(w, `<Error><Code>NoSuchKey</Code></Error>`)
 					return
 				}
-				w.Header().Set("Content-Length", fmt.Sprint(len(value)))
+				w.Header().Set("Content-Length", strconv.Itoa(len(value)))
 				w.Header().Set("Last-Modified", "Mon, 04 May 2026 14:00:00 GMT")
 				w.Header().Set("ETag", `"fixture"`)
 				if r.Method == http.MethodGet {
@@ -504,7 +507,7 @@ func TestDaemonSessionUsageImportsConfiguredS3Source(t *testing.T) {
 			ts := httptest.NewUnstartedServer(nil)
 			cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
 			srv := server.New(cfg, database, engine, server.WithLocalSyncRunner(func(context.Context, func(agentsync.Progress)) (agentsync.SyncStats, error) {
-				t.Error("usage requested full sync")
+				assert.Fail(t, "usage requested full sync")
 				return agentsync.SyncStats{}, nil
 			}))
 			ts.Config.Handler = srv.Handler()

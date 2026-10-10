@@ -58,7 +58,7 @@ func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
 			select {
 			case <-locked:
 			case <-time.After(30 * time.Second):
-				t.Fatal("parent refresh did not reach descendant discovery")
+				require.FailNow(t, "parent refresh did not reach descendant discovery")
 			}
 			if tc.firstImport {
 				assert.Never(t, func() bool { return len(done) > 0 }, 100*time.Millisecond, 10*time.Millisecond)
@@ -74,7 +74,7 @@ func TestTrySyncSessionWithSubagentsRejectsLaterContention(t *testing.T) {
 			case err := <-done:
 				require.ErrorIs(t, err, ErrSyncInProgress)
 			case <-time.After(30 * time.Second):
-				t.Fatal("descendant refresh waited for another writer")
+				require.FailNow(t, "descendant refresh waited for another writer")
 			}
 		})
 	}
