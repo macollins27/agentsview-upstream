@@ -583,7 +583,9 @@ from the archive.
   `POST /api/v1/sessions/sync` so parsing and signal computation remain
   daemon-owned. Manual sync waits for an active writer and rebuilds a stale
   archive before indexing. Usage refresh uses `foreground: true` to return a
-  conflict instead; it reads stored usage with a warning.
+  conflict for either contention or a required rebuild; it reads stored usage
+  with a warning. Remote usage refresh requires API 11; `--no-sync` keeps
+  archived reads available on older servers.
 - If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
   (read-only), sync refuses with a clear error.
 - If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI runs the sync in-process only

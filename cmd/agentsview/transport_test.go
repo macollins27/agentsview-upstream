@@ -657,6 +657,11 @@ func TestEnsureTransport_ArchiveWriteRestartsDifferentDaemonAPI(t *testing.T) {
 			})
 			cfg := config.Config{DataDir: dir}
 			tr, err := ensureTransport(&cfg, transportIntentArchiveWrite, time.Second)
+			if apiVersion > daemonAPIVersion {
+				require.Error(t, err)
+				assert.False(t, started)
+				return
+			}
 			require.NoError(t, err)
 			assert.True(t, started)
 			assert.Equal(t, transportHTTP, tr.Mode)
@@ -698,9 +703,11 @@ func TestEnsureTransport_ReadIntentPreservesExplicitNoSyncWhenRestartingIncompat
 func TestEnsureTransport_ReadIntentRestartsIncompatibleOlderDaemon(t *testing.T) {
 	dir := daemonRuntimeDir(t)
 	host, port := testPingServer(t)
-	writeIncompatibleDaemonRuntime(t, dir, host, port, "1.0.0", true)
+	rec := incompatibleRuntimeRecord(host, port, "dev", true)
+	rec.Metadata[runtimeAPIVersion] = strconv.Itoa(daemonAPIVersion - 1)
+	writeRuntimeRecordFixture(t, dir, rec)
 
-	setTestVersion(t, "v1.1.0-3-gabcdef")
+	setTestVersion(t, "dev")
 
 	var started bool
 	stubStartBackgroundServeForTransport(t, func(
@@ -867,6 +874,26 @@ func TestShouldReplaceDaemonRuntimeReplacesMissingDaemonVersion(t *testing.T) {
 
 	assert.True(t, shouldReplaceDaemonRuntime(rt, "1.1.0"))
 	assert.True(t, shouldReplaceDaemonRuntime(rt, "dev"))
+}
+
+func TestShouldReplaceIncompatibleDaemonRuntimeSameVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		api, data      int
+		readOnly, want bool
+	}{
+		{"older API", daemonAPIVersion - 1, db.CurrentDataVersion(), false, true},
+		{"current API", daemonAPIVersion, db.CurrentDataVersion(), false, false},
+		{"newer API", daemonAPIVersion + 1, db.CurrentDataVersion(), false, false},
+		{"newer data", daemonAPIVersion - 1, db.CurrentDataVersion() + 1, false, false},
+		{"read only", daemonAPIVersion - 1, db.CurrentDataVersion(), true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &DaemonRuntime{API: tc.api, Data: tc.data, ReadOnly: tc.readOnly}
+			rt.Record.Version = "dev"
+			assert.Equal(t, tc.want, shouldReplaceIncompatibleDaemonRuntime(rt, "dev"))
+		})
+	}
 }
 
 func TestEnsureTransport_ArchiveWriteRefusesUnauthenticatedNonLoopbackAutoStart(

@@ -453,10 +453,10 @@ func longLivedDaemonCompatibilityError(err error) error {
 func shouldReplaceIncompatibleDaemonRuntime(
 	rt *DaemonRuntime, currentVersion string,
 ) bool {
-	if rt == nil {
+	if rt == nil || rt.ReadOnly || rt.API > daemonAPIVersion {
 		return false
 	}
-	if !shouldReplaceDaemonRuntime(rt, currentVersion) {
+	if rt.API >= daemonAPIVersion && !shouldReplaceDaemonRuntime(rt, currentVersion) {
 		return false
 	}
 	// Restarting replaces the HTTP API, but cannot downgrade the archive.

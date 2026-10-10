@@ -27,11 +27,6 @@ func (e *Engine) TrySyncSessionWithSubagentsContext(ctx context.Context, session
 }
 
 func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID string, foreground bool) error {
-	// Parent parsing can replace the requested ID and remove its stored path.
-	previousPath := e.db.GetSessionFilePath(ctx, sessionID)
-	if previousPath == "" {
-		previousPath = e.FindSourceFile(ctx, sessionID)
-	}
 	parentErr := e.syncSingleSessionContext(ctx, sessionID, foreground)
 	if errors.Is(parentErr, ErrSyncInProgress) {
 		return parentErr
@@ -45,9 +40,6 @@ func (e *Engine) syncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		parentAgent = def.Type
 	}
 	sourcePath := e.db.GetSessionFilePath(ctx, sessionID)
-	if sourcePath == "" {
-		sourcePath = previousPath
-	}
 	paths := subagentTranscriptPaths(sourcePath)
 	if len(paths) == 0 {
 		return parentErr

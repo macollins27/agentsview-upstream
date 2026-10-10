@@ -1427,6 +1427,7 @@ func TestSessionUsage_NoSyncPreservesAuthenticatedResolution(t *testing.T) {
 	ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{
 		canonicalID: canonicalID,
 		bearer:      "test-token",
+		apiVersion:  10,
 	})
 	cmd := sessionUsageCommand(t, "session", "usage", rawID,
 		"--server", ts.URL, "--server-token-file", tokenFile, "--no-sync")
@@ -1581,7 +1582,7 @@ func TestSessionUsage_ServerFlagRejectsCombinedUsageFromOlderDaemon(
 		apiVersion:  5,
 	})
 	cmd := sessionUsageCommand(t,
-		"session", "usage", "remote-session", "--server", ts.URL)
+		"session", "usage", "remote-session", "--server", ts.URL, "--no-sync")
 
 	out, code, err := sessionUsageDataForCommand(cmd, "remote-session")
 
@@ -1597,29 +1598,54 @@ func TestSessionUsage_ServerFlagRejectsCombinedUsageFromOlderDaemon(
 }
 
 func TestSessionUsage_ServerFlagOwnOnlySkipsSubagents(t *testing.T) {
-	newAgentDataDir(t)
+	for _, noSync := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no_sync_%v", noSync), func(t *testing.T) {
+			newAgentDataDir(t)
+			apiVersion := server.APIVersion
+			if noSync {
+				apiVersion = 4
+			}
+			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "remote-session", apiVersion: apiVersion, serverRunning: true})
+			args := []string{"session", "usage", "remote-session", "--server", ts.URL, "--own-only"}
+			if noSync {
+				args = append(args, "--no-sync")
+			}
+			out, code, err := sessionUsageDataForCommand(sessionUsageCommand(t, args...), "remote-session")
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, "breakdown=true", reqs.UsageQuery)
+			paths := []string{"/api/v1/sessions/remote-session", "/api/v1/sessions/remote-session/usage"}
+			if !noSync {
+				assert.Equal(t, service.SyncInput{ID: "remote-session", Foreground: true}, reqs.SyncInput)
+				paths = []string{"/api/v1/version", paths[0], "/api/v1/sessions/sync", paths[1]}
+			} else {
+				assert.Empty(t, reqs.SyncInput.ID)
+			}
+			assert.Equal(t, paths, reqs.RequestPath)
+			assert.Equal(t, tokenUseExitOK, code)
+		})
+	}
+}
 
-	ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{
-		canonicalID:   "remote-session",
-		apiVersion:    4,
-		serverRunning: true,
-	})
-
-	cmd := sessionUsageCommand(t,
-		"session", "usage", "remote-session", "--server", ts.URL, "--own-only")
-
-	out, code, err := sessionUsageDataForCommand(cmd, "remote-session")
-	require.NoError(t, err)
-	require.NotNil(t, out)
-	assert.Equal(t, "breakdown=true", reqs.UsageQuery,
-		"--own-only must not ask the daemon for subagent usage")
-	assert.Equal(t, service.SyncInput{ID: "remote-session", Foreground: true}, reqs.SyncInput)
-	assert.Equal(t, []string{
-		"/api/v1/sessions/remote-session",
-		"/api/v1/sessions/sync",
-		"/api/v1/sessions/remote-session/usage",
-	}, reqs.RequestPath)
-	assert.Equal(t, tokenUseExitOK, code)
+func TestSessionUsage_ServerFlagRejectsOlderRefresh(t *testing.T) {
+	for _, ownOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("own_only_%v", ownOnly), func(t *testing.T) {
+			newAgentDataDir(t)
+			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "remote-session", apiVersion: 10})
+			args := []string{"session", "usage", "remote-session", "--server", ts.URL}
+			if ownOnly {
+				args = append(args, "--own-only")
+			}
+			out, code, err := sessionUsageDataForCommand(sessionUsageCommand(t, args...), "remote-session")
+			require.ErrorContains(t, err, "does not support foreground session refresh")
+			assert.Contains(t, err.Error(), "upgrade or restart")
+			assert.Contains(t, err.Error(), "--no-sync")
+			assert.Nil(t, out)
+			assert.Equal(t, tokenUseExitErr, code)
+			assert.Equal(t, []string{"/api/v1/version"}, reqs.RequestPath)
+			assert.Empty(t, reqs.SyncInput.ID)
+		})
+	}
 }
 
 // seedSubagentOnlyUsage seeds a parent session with no usage of its own and

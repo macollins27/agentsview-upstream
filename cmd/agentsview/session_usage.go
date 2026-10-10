@@ -101,9 +101,9 @@ func sessionUsageDataForCommand(
 		if err != nil {
 			return nil, tokenUseExitErr, err
 		}
-		if !query.OwnOnly {
-			if err := requireRemoteSubagentUsageSupport(
-				ctx, remote, token,
+		if !query.OwnOnly || !query.NoSync {
+			if err := requireRemoteUsageSupport(
+				ctx, remote, token, query,
 			); err != nil {
 				return nil, tokenUseExitErr, err
 			}
@@ -139,8 +139,8 @@ func sessionUsageDataForCommand(
 	return backend.SessionUsage(ctx, query)
 }
 
-func requireRemoteSubagentUsageSupport(
-	ctx context.Context, baseURL, token string,
+func requireRemoteUsageSupport(
+	ctx context.Context, baseURL, token string, query sessionUsageQuery,
 ) error {
 	capabilities, err := servicehttp.ProbeHTTPServerCapabilities(
 		ctx, baseURL, token,
@@ -148,7 +148,10 @@ func requireRemoteSubagentUsageSupport(
 	if err != nil {
 		return err
 	}
-	if capabilities.APIVersion < server.SubagentUsageAPIVersion {
+	if !query.NoSync && capabilities.APIVersion < server.ForegroundSessionSyncAPIVersion {
+		return fmt.Errorf("server API version %d does not support foreground session refresh; upgrade or restart the server, or pass --no-sync", capabilities.APIVersion)
+	}
+	if !query.OwnOnly && capabilities.APIVersion < server.SubagentUsageAPIVersion {
 		return fmt.Errorf(
 			"server API version %d does not support combined subagent usage; "+
 				"upgrade or restart the server, or pass --own-only",
