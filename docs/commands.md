@@ -975,9 +975,10 @@ server's normal write timeout. Press Ctrl+C to stop waiting; shared cache work
 can continue in the daemon.
 
 Restart older daemons after upgrading so they provide the usage progress
-endpoint. `session usage`, `token-use`, and `usage statusline` still wait for
-initial sync, including when they reuse a daemon started by daily usage.
-Statusline limits the complete wait and report request to 30 seconds.
+endpoint. `session usage` and `token-use` refresh the named session and its
+subagents without waiting for initial sync. `usage statusline` waits for initial
+sync, including when it reuses a daemon started by daily usage, and limits the
+complete wait and report request to 30 seconds.
 
 Offline reads require an archive at the current data version. If an upgrade
 requires a resync, run `agentsview daemon restart` and let the resync finish

@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -17,15 +19,18 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/server"
 	agentsync "go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
-func TestUsageCommandsDeferStartupSyncOnlyForDaily(t *testing.T) {
+func TestUsageCommandsDeferStartupSyncExceptStatusline(t *testing.T) {
 	for _, command := range []string{"daily", "statusline", "session usage", "token-use"} {
 		t.Run(command, func(t *testing.T) {
 			newAgentDataDir(t)
 			var ts *httptest.Server
+			var requests *remoteUsageRequests
 			if command == "daily" || command == "statusline" {
 				ts = sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
 					if command == "daily" {
@@ -35,7 +40,7 @@ func TestUsageCommandsDeferStartupSyncOnlyForDaily(t *testing.T) {
 					}
 				})
 			} else {
-				ts, _ = newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a"})
+				ts, requests = newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a"})
 			}
 			started := false
 			stubStartBackgroundServeForTransport(t, func(ctx context.Context, cfg *config.Config, _ time.Duration, _ bool) (*DaemonRuntime, error) {
@@ -47,7 +52,7 @@ func TestUsageCommandsDeferStartupSyncOnlyForDaily(t *testing.T) {
 						assert.InDelta(t, 30, time.Until(deadline).Seconds(), 1)
 					}
 				}
-				assert.Equal(t, command == "daily", cfg.SkipInitialSync)
+				assert.Equal(t, command != "statusline", cfg.SkipInitialSync)
 				assert.False(t, cfg.NoSync)
 				return daemonRuntimeFromTestURL(t, ts.URL), nil
 			})
@@ -59,14 +64,22 @@ func TestUsageCommandsDeferStartupSyncOnlyForDaily(t *testing.T) {
 					runUsageStatusline(UsageStatuslineConfig{JSON: true})
 				case "session usage":
 					cmd := sessionUsageCommand(t, "session", "usage", "codex:session-a")
-					_, _, err := sessionUsageDataForCommand(cmd, "codex:session-a")
-					require.NoError(t, err)
+					for range 2 {
+						_, _, err := sessionUsageDataForCommand(cmd, "codex:session-a")
+						require.NoError(t, err)
+					}
 				case "token-use":
-					_, _, err := sessionUsageData(t.Context(), "codex:session-a")
-					require.NoError(t, err)
+					for range 2 {
+						_, _, err := sessionUsageData(t.Context(), "codex:session-a")
+						require.NoError(t, err)
+					}
 				}
 			})
 			assert.True(t, started, "exercise daemon startup rather than an existing daemon")
+			if requests != nil {
+				assert.NotContains(t, requests.RequestPath, "/api/v1/sync")
+				assert.Equal(t, "codex:session-a", requests.SyncInput.ID)
+			}
 		})
 	}
 }
@@ -100,7 +113,7 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, engine.StartupReconciled(), "daily usage must not force ingestion")
 
-			policy.SkipInitialSync = false
+			policy.SkipInitialSync = sessionQuery
 			fresh, closeFresh, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, policy)
 			require.NoError(t, err)
 			defer closeFresh()
@@ -108,6 +121,10 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 				out, _, err := fresh.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session0", OwnOnly: true})
 				require.NoError(t, err)
 				require.NotNil(t, out, "lookup must happen after the missing session is imported")
+				assert.False(t, engine.StartupReconciled())
+				unrelated, err := database.GetSession(t.Context(), "session1")
+				require.NoError(t, err)
+				assert.Nil(t, unrelated)
 			} else {
 				_, err := fresh.DailyUsage(t.Context(), dailyUsageQuery{})
 				require.NoError(t, err)
@@ -120,6 +137,57 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 			require.NoError(t, err)
 			cleanup()
 			assert.Equal(t, lastSync, engine.LastSyncStartedAt(t.Context()), "warm prompt refresh must not repeat a full sync")
+		})
+	}
+}
+
+func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
+	const rawID = "a1b2c3d4-1111-4222-8333-444455556666"
+	for _, tc := range []struct {
+		id      string
+		ownOnly bool
+		noSync  bool
+	}{
+		{id: rawID},
+		{id: "codex:" + rawID},
+		{id: rawID, ownOnly: true},
+		{id: "codex:" + rawID, ownOnly: true},
+		{id: rawID, noSync: true},
+		{id: "codex:" + rawID, noSync: true},
+	} {
+		t.Run(fmt.Sprintf("%s/own=%t/no-sync=%t", tc.id, tc.ownOnly, tc.noSync), func(t *testing.T) {
+			cfg := testConfigWithClaudeFixture(t)
+			root := t.TempDir()
+			cfg.AgentDirs[parser.AgentCodex] = []string{root}
+			content := testjsonl.NewSessionBuilder().
+				AddCodexMeta("2026-05-04T14:00:00Z", rawID, "/home/user/code/api", "codex_cli_rs").
+				AddCodexMessage("2026-05-04T14:00:01Z", "user", "hello").String()
+			require.NoError(t, os.WriteFile(filepath.Join(root, "rollout-2026-05-04T14-00-00-"+rawID+".jsonl"), []byte(content), 0o644))
+			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{
+				AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true,
+			})
+			t.Cleanup(engine.Close)
+			ts := httptest.NewUnstartedServer(nil)
+			cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
+			srv := server.New(cfg, database, engine)
+			ts.Config.Handler = srv.Handler()
+			ts.Start()
+			t.Cleanup(ts.Close)
+			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}, agentDirs: cfg.AgentDirs}
+			out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: tc.id, OwnOnly: tc.ownOnly, NoSync: tc.noSync})
+			require.NoError(t, err)
+			if tc.noSync {
+				assert.Nil(t, out)
+				assert.Equal(t, tokenUseExitNotFound, code)
+			} else {
+				require.NotNil(t, out)
+				assert.Equal(t, "codex:"+rawID, out.SessionID)
+			}
+			assert.False(t, engine.StartupReconciled())
+			unrelated, err := database.GetSession(t.Context(), "session0")
+			require.NoError(t, err)
+			assert.Nil(t, unrelated)
 		})
 	}
 }

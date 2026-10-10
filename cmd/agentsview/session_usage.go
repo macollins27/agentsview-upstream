@@ -108,7 +108,7 @@ func sessionUsageDataForCommand(
 				return nil, tokenUseExitErr, err
 			}
 		}
-		return httpSessionUsageData(ctx, remote, token, query)
+		return httpSessionUsageData(ctx, remote, token, query, nil)
 	}
 	cfg, err := config.LoadPFlags(cmd.Flags())
 	if err != nil {
@@ -127,6 +127,7 @@ func sessionUsageDataForCommand(
 		archiveQueryPolicy{
 			NoSync:               noSync,
 			AutoStart:            true,
+			SkipInitialSync:      true,
 			ReadOnlyDaemon:       archiveQueryUseReadOnlyDaemon,
 			DirectReadOnlyAction: "refresh session usage directly",
 		},
@@ -171,28 +172,38 @@ func httpSessionUsageData(
 	baseURL string,
 	token string,
 	query sessionUsageQuery,
+	agentDirs map[parser.AgentType][]string,
 ) (*sessionUsageOutput, int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	sessionID := query.SessionID
+	backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
 	resolvedID, err := resolveServiceSessionID(
-		ctx, servicehttp.NewHTTPBackend(baseURL, token, false, ""), sessionID,
+		ctx, backend, sessionID,
 	)
+	sourceOnly := false
+	if errors.Is(err, errSessionNotFound) && !query.NoSync {
+		if sourceID, found := resolveSourceSessionID(agentDirs, sessionID); found {
+			resolvedID, sourceOnly, err = sourceID, true, nil
+		}
+	}
+	if err == nil && !query.NoSync && (!query.OwnOnly || sourceOnly) {
+		if _, syncErr := backend.Sync(ctx, service.SyncInput{
+			ID: resolvedID, Subagents: true,
+		}); syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
+			fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
+		}
+		if sourceOnly {
+			resolvedID, err = resolveServiceSessionID(ctx, backend, resolvedID)
+		}
+	}
 	if err != nil {
 		if errors.Is(err, errSessionNotFound) {
 			fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
 			return nil, tokenUseExitNotFound, nil
 		}
 		return nil, tokenUseExitErr, err
-	}
-	if !query.OwnOnly && !query.NoSync {
-		backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
-		if _, syncErr := backend.Sync(ctx, service.SyncInput{
-			ID: resolvedID, Subagents: true,
-		}); syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
-			fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
-		}
 	}
 	// Request the full breakdown so the remote path matches the
 	// shape returned by the direct store paths, and the same subagent

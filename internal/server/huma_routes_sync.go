@@ -1070,6 +1070,9 @@ func (s *Server) humaSyncSession(
 	if in.Body.Subagents && in.Body.ID == "" {
 		return nil, apiError(http.StatusBadRequest, "'subagents' requires 'id'")
 	}
+	if err := s.rejectStaleArchiveForSync(); err != nil {
+		return nil, err
+	}
 	if err := s.resyncBeforeSessionSync(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, nil

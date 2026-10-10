@@ -642,8 +642,8 @@ workflow also:
   second index to keep fresh.
 - **Reads committed archive data** — daily reports can run while the daemon
   imports new source changes. Run `agentsview sync` first when those changes
-  must be included. Session usage and statusline finish any pending startup
-  ingestion before querying, including when they reuse an existing daemon.
+  must be included. Session usage refreshes the named session and its subagents.
+  Statusline finishes pending startup ingestion before querying.
 
 ## `agentsview usage daily`
 
@@ -1064,12 +1064,16 @@ when it must include new source changes. Full parser rebuilds serve the retained
 archive with a stale warning; scoped upgrades and schema repairs finish before
 the daemon serves requests.
 
-`session usage`, `token-use`, and `usage statusline` complete pending startup
-ingestion before querying. This also applies when a previous daily report
-started the daemon. Once startup ingestion is complete, subsequent queries do
-not repeat a full sync; the daemon's file watcher handles later source changes.
-During a full parser rebuild, these commands skip startup ingestion and read the
-retained archive with a stale warning.
+`session usage` and `token-use` refresh only the named session and its subagents,
+without starting or waiting for full startup ingestion. `--own-only` reads the
+named session's archived rows, importing its source if it isn't archived yet.
+`usage statusline` completes pending startup ingestion before querying, including
+when a previous daily report started the daemon. Later statusline queries rely
+on the daemon's file watcher for source changes.
+
+While a worker-backed daemon retries a required archive rebuild, session usage
+warns that refresh failed and returns the session's stored usage. Sessions that
+haven't been archived yet remain unavailable until the rebuild succeeds.
 
 `--no-sync` skips source refresh and starts any new daemon without automatic
 sync. It does not disable sync on an already-running daemon. `--offline` reads

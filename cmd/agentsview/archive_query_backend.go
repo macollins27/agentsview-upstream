@@ -95,7 +95,7 @@ func resolveArchiveQueryBackendWithConfig(
 						return nil, nil, fmt.Errorf("waiting for startup sync: %w", err)
 					}
 				}
-				return daemonArchiveQueryBackend{tr: tr, authToken: cfg.AuthToken},
+				return daemonArchiveQueryBackend{tr: tr, authToken: cfg.AuthToken, agentDirs: cfg.AgentDirs},
 					func() {}, nil
 			case policy.ReadOnlyDaemon == archiveQueryRejectReadOnlyDaemon:
 				return nil, nil, readOnlySessionUsageDaemonError(tr.URL)
@@ -140,8 +140,7 @@ func resolveArchiveQueryTransport(
 	policy archiveQueryPolicy,
 ) (transport, error) {
 	if policy.AutoStart && !policy.NoSync {
-		// Daily reports can read committed data while sync runs after
-		// readiness. Session-specific commands still need startup ingestion.
+		// Queries with their own refresh can defer routine startup ingestion.
 		cfg.SkipInitialSync = policy.SkipInitialSync
 		return ensureTransportContext(ctx, cfg, transportIntentArchiveWrite, 0)
 	}
@@ -198,6 +197,7 @@ func openArchiveQueryDB(
 type daemonArchiveQueryBackend struct {
 	tr        transport
 	authToken string
+	agentDirs map[parser.AgentType][]string
 }
 
 func (b daemonArchiveQueryBackend) ActivityReport(
@@ -224,7 +224,7 @@ func (b daemonArchiveQueryBackend) SessionUsage(
 	ctx context.Context,
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
-	return httpSessionUsageData(ctx, b.tr.URL, b.authToken, query)
+	return httpSessionUsageData(ctx, b.tr.URL, b.authToken, query, b.agentDirs)
 }
 
 func (b daemonArchiveQueryBackend) MachineLabels(

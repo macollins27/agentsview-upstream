@@ -1581,23 +1581,32 @@ func TestHumaTriggerSyncLocalNoSyncResyncsStaleDB(t *testing.T) {
 // /resync and never runs the runner, since the worker refuses to swap the
 // archive under the live daemon.
 func TestHumaTriggerSyncWorkerBackedRejectsStaleArchive(t *testing.T) {
-	ran := false
-	f := newSyncRouteFixture(t, withStaleDB(), withLocalSyncRunner(
-		func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
-			ran = true
-			return syncpkg.SyncStats{}, nil
-		},
-	))
-	require.True(t, f.db.NeedsResync())
+	for _, path := range []string{"/api/v1/sync", "/api/v1/sessions/sync"} {
+		t.Run(path, func(t *testing.T) {
+			ran := false
+			resyncCalls := 0
+			f := newSyncRouteFixture(t, withStaleDB(), withLocalSyncRunner(
+				func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+					ran = true
+					return syncpkg.SyncStats{}, nil
+				},
+			), withLocalResyncRunner(func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+				resyncCalls++
+				return syncpkg.SyncStats{}, nil
+			}))
+			require.True(t, f.db.NeedsResync())
 
-	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sync", nil)
+			w := serveJSON(t, f.handler, http.MethodPost, path, service.SyncInput{ID: "session-a", Subagents: true})
 
-	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
-	assert.Contains(t, w.Body.String(), "resync")
-	assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader),
-		"the rejection must carry the machine-readable resync signal for the CLI")
-	assert.False(t, ran, "the worker-backed runner must not run for a stale archive")
-	assert.True(t, f.db.NeedsResync(), "a rejected sync must not resync")
+			require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
+			assert.Contains(t, w.Body.String(), "resync")
+			assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader),
+				"the rejection must carry the machine-readable resync signal for the CLI")
+			assert.False(t, ran, "the worker-backed runner must not run for a stale archive")
+			assert.Zero(t, resyncCalls, "a rejected session refresh must not rebuild the archive")
+			assert.True(t, f.db.NeedsResync(), "a rejected sync must not resync")
+		})
+	}
 }
 
 // TestHumaTriggerSyncWorkerRunnerErrorRejectsStream pins the failure UX: a
