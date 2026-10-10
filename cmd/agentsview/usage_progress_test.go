@@ -326,7 +326,7 @@ func TestDaemonSessionUsageImportsOnlyRequestedSource(t *testing.T) {
 			}
 			require.NoError(t, err)
 			if tc.stale || tc.busy {
-				assert.Contains(t, stderr, "warning: sync failed:")
+				assert.Contains(t, stderr, "warning: refresh incomplete; showing stored usage:")
 			}
 			if tc.noSync && !tc.archived {
 				assert.Nil(t, out)

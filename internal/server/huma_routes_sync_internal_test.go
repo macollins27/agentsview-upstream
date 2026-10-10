@@ -1800,6 +1800,7 @@ func TestCanceledForegroundSyncLeavesStartupFallbackEligible(t *testing.T) {
 
 func TestHumaSyncSessionLocalNoSyncResyncsStaleDB(t *testing.T) {
 	f := newSyncRouteFixture(t, withStaleDB())
+	require.True(t, f.db.NeedsResync())
 	sessionPath := f.writeClaudeSession(t, "proj/session.jsonl", "stale session sync route")
 	w := postSessionSync(t, f.handler, sessionPath)
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())

@@ -200,7 +200,7 @@ func httpSessionUsageData(
 				return nil, tokenUseExitErr, fmt.Errorf("refresh session: %w", syncErr)
 			}
 			if !errors.Is(syncErr, db.ErrReadOnly) {
-				fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
+				fmt.Fprintf(os.Stderr, "warning: refresh incomplete; showing stored usage: %v\n", syncErr)
 			}
 		} else if detail != nil {
 			resolvedID = detail.ID

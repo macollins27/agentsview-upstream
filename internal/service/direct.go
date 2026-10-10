@@ -554,8 +554,18 @@ func (b *directBackend) Sync(
 		var err error
 		if in.Subagents {
 			err = syncCombined(ctx, in.ID)
-		} else {
+		} else if in.Foreground {
 			err = syncSingle(ctx, in.ID)
+		} else {
+			storedPath := b.local.GetSessionFilePath(ctx, in.ID)
+			_, _, visualStudio := parser.SplitVisualStudioCopilotVirtualPath(storedPath)
+			_, _, windsurf := parser.SplitWindsurfVirtualPath(storedPath)
+			if storedPath != "" && !visualStudio && !windsurf {
+				path = parser.ResolveSourceFilePath(storedPath)
+				err = syncPaths(ctx, []string{path})
+			} else {
+				err = syncSingle(ctx, in.ID)
+			}
 		}
 		if err != nil {
 			return nil, err

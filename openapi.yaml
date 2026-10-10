@@ -6678,6 +6678,7 @@ components:
       additionalProperties: false
       properties:
         foreground:
+          description: Reject writer contention or a required archive rebuild without waiting or rebuilding
           type: boolean
         id:
           type: string

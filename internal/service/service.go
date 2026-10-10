@@ -501,7 +501,7 @@ type SyncInput struct {
 	Path       string `json:"path,omitempty"`
 	ID         string `json:"id,omitempty"`
 	Subagents  bool   `json:"subagents,omitempty"`
-	Foreground bool   `json:"foreground,omitempty"`
+	Foreground bool   `json:"foreground,omitempty" doc:"Reject writer contention or a required archive rebuild without waiting or rebuilding"`
 }
 
 // Event is the CLI-side NDJSON wrapper for SSE events from

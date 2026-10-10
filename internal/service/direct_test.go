@@ -751,6 +751,36 @@ func TestDirectBackend_Sync_NilEngineIsReadOnly(t *testing.T) {
 		"expected db.ErrReadOnly, got %v", err)
 }
 
+func TestDirectBackend_Sync_ManualIDUsesStoredPath(t *testing.T) {
+	d := dbtest.OpenTestDB(t)
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	require.NoError(t, os.MkdirAll(project, 0o700))
+	path := filepath.Join(project, "session.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(testjsonl.ClaudeUserJSON("original", "2026-06-17T12:00:00Z")+"\n"), 0o600))
+	engine := sync.NewEngine(t.Context(), d, sync.EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {root}}, Machine: "local"})
+	t.Cleanup(engine.Close)
+	require.NoError(t, engine.SyncPathsContext(t.Context(), []string{path}))
+	svc := service.NewDirectBackend(d, engine)
+	session, err := d.GetSessionFull(t.Context(), "session")
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	message := "stored unchanged"
+	session.FirstMessage = &message
+	require.NoError(t, d.UpsertSession(t.Context(), *session))
+	for _, id := range []string{session.ID, "remote~" + session.ID} {
+		if id != session.ID {
+			remote := *session
+			remote.ID = id
+			require.NoError(t, d.UpsertSession(t.Context(), remote))
+		}
+		detail, err := svc.Sync(t.Context(), service.SyncInput{ID: id})
+		require.NoError(t, err)
+		require.NotNil(t, detail)
+		assert.Equal(t, &message, detail.FirstMessage)
+	}
+}
+
 // TestDirectBackend_Sync_AmbiguousPath_ReturnsListedIDs verifies
 // that when one JSONL file maps to multiple sessions in the DB
 // (e.g. Claude forked transcripts), Sync refuses to pick one

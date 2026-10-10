@@ -586,6 +586,10 @@ from the archive.
   conflict for either contention or a required rebuild; it reads stored usage
   with a warning. Remote usage refresh requires API 11; `--no-sync` keeps
   archived reads available on older servers.
+- Local clients replace an older-API daemon before reading or writing the
+  archive, including daemons with the same development version. Read-only
+  daemons, newer API or data versions, disabled automatic startup, and
+  long-running clients retain their existing replacement restrictions.
 - If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
   (read-only), sync refuses with a clear error.
 - If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI runs the sync in-process only
