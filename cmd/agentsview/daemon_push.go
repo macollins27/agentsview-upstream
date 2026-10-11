@@ -117,6 +117,9 @@ func postDaemonPush[T, P any](
 		if resp.StatusCode != http.StatusOK {
 			msg := payload
 			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusConflict && resp.Header.Get(server.ResyncRequiredHeader) != "" {
+				return zero, fmt.Errorf("%w: %s", errDaemonResyncRequired, daemonErrorMessage(resp.StatusCode, msg))
+			}
 			if !fallbackAttempted && body.WatchBatch != nil &&
 				daemonRejectsWatchScope(resp.StatusCode, msg) {
 				body.WatchBatch = nil

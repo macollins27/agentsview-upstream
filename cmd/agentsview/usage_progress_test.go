@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -17,11 +19,13 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/server"
 	agentsync "go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
-func TestUsageCommandsDeferStartupSyncExceptStatusline(t *testing.T) {
+func TestUsageCommandsWaitForStartedDaemonExceptDaily(t *testing.T) {
 	for _, command := range []string{"daily", "statusline", "session usage", "token-use"} {
 		t.Run(command, func(t *testing.T) {
 			newAgentDataDir(t)
@@ -69,7 +73,8 @@ func TestUsageCommandsDeferStartupSyncExceptStatusline(t *testing.T) {
 			})
 			assert.True(t, started, "exercise daemon startup rather than an existing daemon")
 			if reqs != nil {
-				assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
+				assert.Equal(t, "/api/v1/sync", reqs.RequestPath[0])
+				assert.Equal(t, 1, strings.Count(strings.Join(reqs.RequestPath, "\n"), "/api/v1/sync"))
 			}
 		})
 	}
@@ -138,6 +143,65 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 			assert.Equal(t, lastSync, engine.LastSyncStartedAt(t.Context()), "warm prompt refresh must not repeat a full sync")
 		})
 	}
+}
+
+func TestSessionUsageStartedDaemonImportsCodexChild(t *testing.T) {
+	cfg := testConfigWithClaudeFixture(t)
+	codexDir := t.TempDir()
+	cfg.AgentDirs[parser.AgentCodex] = []string{codexDir}
+	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+	seedUsageSession(t, database, "codex:parent-a", "project", "codex", 10)
+	const timestamp = "2026-01-01T00:00:00Z"
+	child := strings.Join([]string{
+		testjsonl.CodexSubagentSessionMetaJSON("child-a", "parent-a", "/project", "codex_cli_rs", timestamp),
+		testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
+		testjsonl.CodexMsgJSON("user", "child task", timestamp),
+		testjsonl.CodexMsgJSON("assistant", "child result", timestamp),
+		testjsonl.CodexTokenCountJSON(timestamp, 100, 42, 0),
+	}, "\n") + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(codexDir, "rollout-child-a.jsonl"), []byte(child), 0o600))
+	engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{
+		AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true,
+	})
+	t.Cleanup(engine.Close)
+	ts := httptest.NewUnstartedServer(nil)
+	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
+	srv := server.New(cfg, database, engine)
+	startupCalls := 0
+	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/sync" {
+			assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
+			startupCalls++
+		}
+		srv.Handler().ServeHTTP(w, r)
+	})
+	ts.Start()
+	t.Cleanup(ts.Close)
+	stubStartBackgroundServeForTransport(t, func(_ context.Context, _ *config.Config, _ time.Duration, _ bool) (*DaemonRuntime, error) {
+		return daemonRuntimeFromTestURL(t, ts.URL), nil
+	})
+	backend, cleanup, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, archiveQueryPolicy{
+		AutoStart: true, SkipInitialSync: true, WaitForStartedDaemon: true,
+	})
+	require.NoError(t, err)
+	defer cleanup()
+	out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:parent-a"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, tokenUseExitOK, code)
+	assert.Equal(t, 52, out.TotalOutputTokens)
+	assert.Equal(t, 1, out.SubagentCount)
+	assert.Equal(t, 1, startupCalls)
+	registerTestRuntime(t, cfg.DataDir, ts.URL, false)
+	forbidStartBackgroundServeForTransport(t, "an existing daemon must serve the next lookup")
+	backend, cleanup, err = resolveArchiveQueryBackendWithConfig(t.Context(), cfg, archiveQueryPolicy{
+		AutoStart: true, SkipInitialSync: true, WaitForStartedDaemon: true,
+	})
+	require.NoError(t, err)
+	defer cleanup()
+	_, _, err = backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:parent-a"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, startupCalls, "a known session on a running daemon must skip startup sync")
 }
 
 func TestUsageProgressRejectsDaemonWithoutStreamEndpoint(t *testing.T) {

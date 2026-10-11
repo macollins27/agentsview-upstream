@@ -345,9 +345,6 @@ func (s *Server) archiveStale() bool {
 // in-process path (no worker runner) safely resyncs a stale archive itself, so
 // the gate only applies when the worker-backed runner is wired.
 func (s *Server) rejectStaleArchiveForSync() error {
-	if s.localSyncRunner == nil {
-		return nil
-	}
 	local, ok := s.db.(*db.DB)
 	if !ok || !local.NeedsResync() {
 		return nil
@@ -1073,15 +1070,6 @@ func (s *Server) humaSyncSession(
 	if err := s.rejectStaleArchiveForSync(); err != nil {
 		return nil, err
 	}
-	if err := s.resyncBeforeSessionSync(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, nil
-		}
-		if handled := handleHumaContextError(err); handled != nil {
-			return nil, handled
-		}
-		return nil, apiError(http.StatusInternalServerError, err.Error())
-	}
 	detail, err := s.sessionSyncService(ctx).Sync(ctx, in.Body)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1100,19 +1088,4 @@ func (s *Server) humaSyncSession(
 		return nil, apiError(http.StatusInternalServerError, err.Error())
 	}
 	return &jsonOutput[*service.SessionDetail]{Body: detail}, nil
-}
-
-func (s *Server) resyncBeforeSessionSync(ctx context.Context) error {
-	local, ok := s.db.(*db.DB)
-	if !ok || !local.NeedsResync() {
-		return nil
-	}
-	engine, err := s.syncEngineForRequest(ctx)
-	if err != nil {
-		return err
-	}
-	if _, err := s.runResyncWithFallback(ctx, engine, nil); err != nil {
-		return err
-	}
-	return ctx.Err()
 }

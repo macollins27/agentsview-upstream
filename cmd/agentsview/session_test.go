@@ -1620,11 +1620,9 @@ func TestSessionUsage_ServerFlagOwnOnlySkipsSubagents(t *testing.T) {
 	require.NotNil(t, out)
 	assert.Equal(t, "breakdown=true", reqs.UsageQuery,
 		"--own-only must not ask the daemon for subagent usage")
-	assert.Equal(t, "remote-session", reqs.SyncInput.ID)
-	assert.False(t, reqs.SyncInput.Subagents)
+	assert.Empty(t, reqs.SyncInput.ID)
 	assert.Equal(t, []string{
 		"/api/v1/sessions/remote-session",
-		"/api/v1/sessions/sync",
 		"/api/v1/sessions/remote-session/usage",
 	}, reqs.RequestPath)
 	assert.Equal(t, tokenUseExitOK, code)
@@ -1645,10 +1643,138 @@ func TestSessionUsage_StaleArchiveReturnsStoredUsage(t *testing.T) {
 		assert.Equal(t, 42, out.TotalOutputTokens)
 	})
 	assert.Contains(t, stderr, "warning: sync failed:")
-	assert.Contains(t, stderr, "archive requires a full resync")
+	assert.Contains(t, stderr, "agentsview resync")
 	assert.Equal(t, "codex:session-a", reqs.SyncInput.ID)
 	assert.True(t, reqs.SyncInput.Subagents)
 	assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
+}
+
+func TestSessionUsage_OlderServerSkipsRefresh(t *testing.T) {
+	for _, remote := range []bool{false, true} {
+		t.Run(fmt.Sprint(remote), func(t *testing.T) {
+			dataDir := newAgentDataDir(t)
+			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a", apiVersion: 10})
+			if !remote {
+				t.Setenv("AGENTSVIEW_NO_DAEMON", "1")
+				wrapped := sessionUsageRuntimeServer(t, ts.Config.Handler.ServeHTTP)
+				rt := daemonRuntimeFromTestURL(t, wrapped.URL)
+				rec := incompatibleRuntimeRecord(rt.Host, rt.Port, version, false)
+				rec.Metadata[runtimeAPIVersion] = "10"
+				_, err := writeRuntimeRecordForTest(dataDir, rec)
+				require.NoError(t, err)
+				forbidStartBackgroundServeForTransport(t, "usage must read the older daemon's archive")
+			}
+			stderr := captureStderr(t, func() {
+				var out *sessionUsageOutput
+				var code int
+				var err error
+				if remote {
+					cmd := sessionUsageCommand(t, "session", "usage", "codex:session-a", "--server", ts.URL)
+					out, code, err = sessionUsageDataForCommand(cmd, "codex:session-a")
+				} else {
+					cmd := sessionUsageCommand(t, "session", "usage", "codex:session-a")
+					out, code, err = sessionUsageDataForCommand(cmd, "codex:session-a")
+				}
+				require.NoError(t, err)
+				require.NotNil(t, out)
+				assert.Equal(t, tokenUseExitOK, code)
+				assert.Equal(t, 42, out.TotalOutputTokens)
+			})
+			assert.Contains(t, stderr, "warning:")
+			assert.Contains(t, stderr, "server API version 10")
+			assert.Contains(t, stderr, "agentsview daemon restart")
+			assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
+			assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
+		})
+	}
+}
+
+func TestSessionUsage_StaleNoSyncServerReturnsStoredUsage(t *testing.T) {
+	cfg := testConfigWithClaudeFixture(t)
+	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+	seedUsageSession(t, database, "codex:session-a", "project", "codex", 42)
+	require.NoError(t, database.Close())
+	markArchiveStale(t, cfg.DBPath)
+	database, err := db.Open(t.Context(), cfg.DBPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+	require.True(t, database.NeedsResync())
+	ts := httptest.NewUnstartedServer(nil)
+	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
+	srv := server.New(cfg, database, nil)
+	ts.Config.Handler = srv.Handler()
+	ts.Start()
+	t.Cleanup(ts.Close)
+	backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}
+	stderr := captureStderr(t, func() {
+		out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:session-a"})
+		require.NoError(t, err)
+		require.NotNil(t, out)
+		assert.Equal(t, tokenUseExitOK, code)
+		assert.Equal(t, 42, out.TotalOutputTokens)
+	})
+	assert.Contains(t, stderr, "warning: sync failed:")
+	assert.Contains(t, stderr, "agentsview resync")
+	assert.True(t, database.NeedsResync(), "usage must leave the pending rebuild untouched")
+}
+
+func TestSessionUsage_MissingSessionStartupRetry(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusConflict, http.StatusInternalServerError} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			startupCalls, refreshCalls := 0, 0
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/sync":
+					startupCalls++
+					assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
+					if status == http.StatusConflict {
+						w.Header().Set(server.ResyncRequiredHeader, "true")
+					}
+					w.WriteHeader(status)
+					writeJSONResponse(w, `{"detail":"startup ingestion refused"}`)
+				case "/api/v1/sessions/codex:missing":
+					if startupCalls > 0 && status == http.StatusOK {
+						writeJSONResponse(w, `{"id":"codex:missing","agent":"codex"}`)
+					} else {
+						http.NotFound(w, r)
+					}
+				case "/api/v1/sessions/codex:missing/usage":
+					writeJSONResponse(w, `{"session_id":"codex:missing","has_token_data":true,"total_output_tokens":42}`)
+				case "/api/v1/sessions/sync":
+					refreshCalls++
+					t.Error("startup retry must read ingested usage without another refresh")
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(ts.Close)
+			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}
+			stderr := captureStderr(t, func() {
+				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:missing"})
+				switch status {
+				case http.StatusOK:
+					require.NoError(t, err)
+					require.NotNil(t, out)
+					assert.Equal(t, tokenUseExitOK, code)
+					assert.Equal(t, 42, out.TotalOutputTokens)
+				case http.StatusConflict:
+					require.NoError(t, err)
+					assert.Nil(t, out)
+					assert.Equal(t, tokenUseExitNotFound, code)
+				default:
+					require.ErrorContains(t, err, "startup ingestion refused")
+					assert.Equal(t, tokenUseExitErr, code)
+				}
+			})
+			assert.Equal(t, 1, startupCalls)
+			assert.Zero(t, refreshCalls)
+			if status == http.StatusConflict {
+				assert.Contains(t, stderr, "warning: waiting for startup sync:")
+				assert.Contains(t, stderr, "startup ingestion refused")
+				assert.Contains(t, stderr, "agentsview resync\nsession not found: codex:missing\n")
+			}
+		})
+	}
 }
 
 // seedSubagentOnlyUsage seeds a parent session with no usage of its own and
@@ -2364,7 +2490,7 @@ func daemonRuntimeFromTestURL(t *testing.T, rawURL string) *DaemonRuntime {
 	require.NoError(t, err)
 	port, err := strconv.Atoi(portText)
 	require.NoError(t, err)
-	return &DaemonRuntime{Host: host, Port: port}
+	return &DaemonRuntime{Host: host, Port: port, API: server.APIVersion}
 }
 
 // TestSessionWatch_ExitsOnCancel cancels only after the real service subscribes.

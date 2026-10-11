@@ -82,6 +82,7 @@ type transport struct {
 	DirectReason       string
 	DirectError        error
 	Runtime            *DaemonRuntime
+	StartedDaemon      bool
 }
 
 type customPricingStore interface {
@@ -283,7 +284,9 @@ func ensureTransportContext(
 			if err != nil {
 				return transport{}, err
 			}
-			return transportFromRuntime(rt), nil
+			tr = transportFromRuntime(rt)
+			tr.StartedDaemon = true
+			return tr, nil
 		}
 		return tr, nil
 	}
@@ -306,7 +309,9 @@ func ensureTransportContext(
 			if err != nil {
 				return transport{}, err
 			}
-			return transportFromRuntime(rt), nil
+			tr = transportFromRuntime(rt)
+			tr.StartedDaemon = true
+			return tr, nil
 		}
 	}
 	if intent == transportIntentRead {
@@ -336,7 +341,9 @@ func ensureTransportContext(
 		if err != nil {
 			return transport{}, err
 		}
-		return transportFromRuntime(rt), nil
+		tr = transportFromRuntime(rt)
+		tr.StartedDaemon = true
+		return tr, nil
 	}
 	if daemonAutostartDisabled() {
 		if tr.DirectIncompatible {
@@ -370,7 +377,9 @@ func ensureTransportContext(
 	if err != nil {
 		return transport{}, err
 	}
-	return transportFromRuntime(rt), nil
+	tr = transportFromRuntime(rt)
+	tr.StartedDaemon = true
+	return tr, nil
 }
 
 func waitForBackgroundLaunchBeforeArchiveWrite(

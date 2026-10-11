@@ -642,8 +642,10 @@ workflow also:
   second index to keep fresh.
 - **Reads committed archive data** — daily reports can run while the daemon
   imports new source changes. Run `agentsview sync` first when those changes
-  must be included. Session usage refreshes only the named session and its
-  Claude subagents. Unknown IDs and statusline wait for startup ingestion.
+  must be included. Session usage refreshes the named session and its subagents.
+  A daemon the command starts finishes startup ingestion first. Unknown IDs and
+  statusline also wait for startup ingestion. Stale archives return stored usage
+  with a warning.
 
 ## `agentsview usage daily`
 
@@ -1064,9 +1066,13 @@ when it must include new source changes. Full parser rebuilds serve the retained
 archive with a stale warning; scoped upgrades and schema repairs finish before
 the daemon serves requests.
 
-`session usage` and `token-use` refresh the named session and its Claude subagents.
-`--own-only` excludes subagents. Unknown IDs wait for startup ingestion once.
-Pending rebuilds return stored usage with a warning. Statusline still waits.
+`session usage` and `token-use` refresh the named session and its subagents.
+A daemon the command starts finishes startup ingestion first. A running daemon
+waits only for an unknown ID, once. `--own-only` reads stored usage without a
+targeted refresh and excludes subagents. If a stale archive refuses the refresh,
+the command shows stored usage with a warning. IDs still missing return
+"session not found" and exit 2. Older servers skip the refresh with a warning to
+restart or upgrade. Statusline still waits.
 
 `--no-sync` skips source refresh and starts any new daemon without automatic
 sync. It does not disable sync on an already-running daemon. `--offline` reads

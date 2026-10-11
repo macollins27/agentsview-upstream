@@ -975,9 +975,13 @@ server's normal write timeout. Press Ctrl+C to stop waiting; shared cache work
 can continue in the daemon.
 
 Restart older daemons after upgrading so they provide the usage progress
-endpoint. Session usage refreshes the named session and its Claude subagents.
-Unknown IDs wait for startup ingestion. Pending rebuilds return stored usage
-with a warning. Statusline waits for startup sync with a 30-second deadline.
+endpoint. Session usage refreshes the named session and its subagents. A daemon
+the command starts finishes startup ingestion first. A running daemon waits only
+for an unknown ID, once. `--own-only` reads stored usage without a targeted
+refresh and excludes subagents. If a stale archive refuses the refresh, the
+command shows stored usage with a warning. IDs still missing return
+"session not found" and exit 2. Older servers skip the refresh with a warning
+to restart or upgrade. Statusline waits for startup sync with a 30-second deadline.
 
 Offline reads require an archive at the current data version. If an upgrade
 requires a resync, run `agentsview daemon restart` and let the resync finish

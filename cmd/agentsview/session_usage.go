@@ -101,17 +101,17 @@ func sessionUsageDataForCommand(
 		if err != nil {
 			return nil, tokenUseExitErr, err
 		}
+		tr := transport{Mode: transportHTTP, URL: remote}
 		if !query.OwnOnly {
-			if err := requireRemoteSubagentUsageSupport(
-				ctx, remote, token,
-			); err != nil {
+			apiVersion, err := requireRemoteSubagentUsageSupport(ctx, remote, token)
+			if err != nil {
 				return nil, tokenUseExitErr, err
 			}
+			tr.Runtime = &DaemonRuntime{API: apiVersion}
 		}
-		out, code, err := httpSessionUsageData(ctx, remote, token, query)
+		out, code, err := httpSessionUsageData(ctx, tr, token, query)
 		if errors.Is(err, errSessionNotFound) {
-			fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
-			return nil, tokenUseExitNotFound, nil
+			return sessionUsageNotFound(sessionID)
 		}
 		return out, code, err
 	}
@@ -133,6 +133,7 @@ func sessionUsageDataForCommand(
 			NoSync:               noSync,
 			AutoStart:            true,
 			SkipInitialSync:      true,
+			WaitForStartedDaemon: true,
 			ReadOnlyDaemon:       archiveQueryUseReadOnlyDaemon,
 			DirectReadOnlyAction: "refresh session usage directly",
 		},
@@ -144,23 +145,28 @@ func sessionUsageDataForCommand(
 	return backend.SessionUsage(ctx, query)
 }
 
+func sessionUsageNotFound(sessionID string) (*sessionUsageOutput, int, error) {
+	fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
+	return nil, tokenUseExitNotFound, nil
+}
+
 func requireRemoteSubagentUsageSupport(
 	ctx context.Context, baseURL, token string,
-) error {
+) (int, error) {
 	capabilities, err := servicehttp.ProbeHTTPServerCapabilities(
 		ctx, baseURL, token,
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if capabilities.APIVersion < server.SubagentUsageAPIVersion {
-		return fmt.Errorf(
+		return 0, fmt.Errorf(
 			"server API version %d does not support combined subagent usage; "+
 				"upgrade or restart the server, or pass --own-only",
 			capabilities.APIVersion,
 		)
 	}
-	return nil
+	return capabilities.APIVersion, nil
 }
 
 func readOnlySessionUsageDaemonError(url string) error {
@@ -174,13 +180,14 @@ func readOnlySessionUsageDaemonError(url string) error {
 
 func httpSessionUsageData(
 	ctx context.Context,
-	baseURL string,
+	tr transport,
 	token string,
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	baseURL := tr.URL
 	sessionID := query.SessionID
 	resolvedID, err := resolveServiceSessionID(
 		ctx, servicehttp.NewHTTPBackend(baseURL, token, false, ""), sessionID,
@@ -191,11 +198,24 @@ func httpSessionUsageData(
 		}
 		return nil, tokenUseExitErr, err
 	}
-	if !query.NoSync {
+	if !query.NoSync && !query.OwnOnly {
 		backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
-		if _, syncErr := backend.Sync(ctx, service.SyncInput{
-			ID: resolvedID, Subagents: !query.OwnOnly,
-		}); syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
+		var syncErr error
+		apiVersion := 0
+		if tr.Runtime != nil {
+			apiVersion = tr.Runtime.API
+		} else {
+			var capabilities servicehttp.HTTPServerCapabilities
+			capabilities, syncErr = servicehttp.ProbeHTTPServerCapabilities(ctx, baseURL, token)
+			apiVersion = capabilities.APIVersion
+		}
+		if syncErr == nil && apiVersion < server.TargetedSessionSyncAPIVersion {
+			syncErr = fmt.Errorf("server API version %d cannot refresh sessions without rebuilding a stale archive; run agentsview daemon restart or upgrade the server", apiVersion)
+		}
+		if syncErr == nil {
+			_, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: true})
+		}
+		if syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
 			fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
 		}
 	}
@@ -289,8 +309,7 @@ func storeSessionUsageData(
 			return nil, tokenUseExitErr,
 				fmt.Errorf("resolving %s session id: %w", storeName, err)
 		}
-		fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
-		return nil, tokenUseExitNotFound, nil
+		return sessionUsageNotFound(sessionID)
 	}
 
 	var u *db.SessionUsage
@@ -305,8 +324,7 @@ func storeSessionUsageData(
 			fmt.Errorf("querying %s session usage: %w", storeName, err)
 	}
 	if u == nil {
-		fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
-		return nil, tokenUseExitNotFound, nil
+		return sessionUsageNotFound(sessionID)
 	}
 	if u.Agent == "" {
 		if def, ok := parser.AgentByPrefix(u.SessionID); ok {
