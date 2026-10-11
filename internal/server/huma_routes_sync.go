@@ -1070,8 +1070,8 @@ func (s *Server) humaSyncSession(
 	if err := s.rejectStaleArchiveForSync(); err != nil {
 		return nil, err
 	}
-	if in.Body.Subagents && s.engine != nil && !s.engine.StartupAttemptCompleted() {
-		return nil, apiError(http.StatusConflict, "startup ingestion is pending")
+	if in.Body.Subagents && s.engine != nil && !s.engine.StartupReconciled() {
+		return nil, apiError(http.StatusConflict, "startup ingestion has not completed; showing stored usage until it does")
 	}
 	detail, err := s.sessionSyncService(ctx).Sync(ctx, in.Body)
 	if err != nil {
