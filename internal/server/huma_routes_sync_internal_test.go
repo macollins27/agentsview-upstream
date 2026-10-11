@@ -1555,13 +1555,13 @@ func TestHumaSyncSessionRouteIsNotWriteTimeoutWrapped(t *testing.T) {
 		t, 10*time.Millisecond,
 		withHandlerDelay(100*time.Millisecond),
 	)
-	for _, body := range []map[string]any{{}, {"path": "session.jsonl", "foreground": true}} {
-		w := serveJSON(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/sync", body)
-		resp := w.Result()
-		assert.False(t, isTimeoutResponse(t, resp))
-		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-		require.NoError(t, resp.Body.Close())
-	}
+	w := serveJSON(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/sync",
+		map[string]any{})
+
+	resp := w.Result()
+	defer resp.Body.Close()
+	assert.False(t, isTimeoutResponse(t, resp))
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestHumaTriggerSyncLocalNoSyncResyncsStaleDB(t *testing.T) {
@@ -1576,46 +1576,30 @@ func TestHumaTriggerSyncLocalNoSyncResyncsStaleDB(t *testing.T) {
 	assertOnlySessionFirstMessageContains(t, f.db, "stale no sync route")
 }
 
-// TestHumaTriggerSyncWorkerBackedRejectsStaleArchive pins the new UX: with the
-// worker-backed runner wired, /sync on a stale archive returns 409 pointing at
-// /resync and never runs the runner, since the worker refuses to swap the
-// archive under the live daemon.
 func TestHumaTriggerSyncWorkerBackedRejectsStaleArchive(t *testing.T) {
-	for _, tc := range []struct {
-		path     string
-		noRunner bool
-	}{{"/api/v1/sync", false}, {"/api/v1/sessions/sync", false}, {"/api/v1/sessions/sync", true}} {
-		path := tc.path
-		t.Run(path, func(t *testing.T) {
-			ran := false
-			resyncCalls := 0
-			opts := []syncRouteFixtureOption{withStaleDB()}
-			if !tc.noRunner {
-				opts = append(opts, withLocalSyncRunner(
-					func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
-						ran = true
-						return syncpkg.SyncStats{}, nil
-					},
-				), withLocalResyncRunner(func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
-					resyncCalls++
+	for _, route := range []string{"/api/v1/sync", "/api/v1/sessions/sync"} {
+		t.Run(route, func(t *testing.T) {
+			syncRuns, resyncRuns := 0, 0
+			f := newSyncRouteFixture(t, withStaleDB(), withLocalSyncRunner(
+				func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+					syncRuns++
 					return syncpkg.SyncStats{}, nil
-				}))
-			}
-			f := newSyncRouteFixture(t, opts...)
+				},
+			), withLocalResyncRunner(
+				func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+					resyncRuns++
+					return syncpkg.SyncStats{}, nil
+				},
+			))
 			require.True(t, f.db.NeedsResync())
 
-			var body any
-			if path == "/api/v1/sessions/sync" {
-				body = service.SyncInput{ID: "session-a", Subagents: true, Foreground: true}
-			}
-			w := serveJSON(t, f.handler, http.MethodPost, path, body)
+			w := serveJSON(t, f.handler, http.MethodPost, route, service.SyncInput{ID: "session0"})
 
 			require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
 			assert.Contains(t, w.Body.String(), "resync")
-			assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader),
-				"the rejection must carry the machine-readable resync signal for the CLI")
-			assert.False(t, ran, "the worker-backed runner must not run for a stale archive")
-			assert.Zero(t, resyncCalls, "a rejected session refresh must not rebuild the archive")
+			assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader))
+			assert.Zero(t, syncRuns)
+			assert.Zero(t, resyncRuns)
 			assert.True(t, f.db.NeedsResync(), "a rejected sync must not resync")
 		})
 	}

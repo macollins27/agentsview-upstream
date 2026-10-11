@@ -89,11 +89,19 @@ func resolveRawSessionID(
 	if err := database.RequireSourceSync(ctx); err != nil {
 		return input, false
 	}
+
 	// Canonical disk probe: if the input starts with a known
 	// agent prefix, trust that interpretation first and strip
 	// before resolving the source (which rejects IDs with
 	// colons via IsValidSessionID).
-	if def, ok := parser.AgentByPrefix(input); ok && def.IDPrefix != "" && agentHasDiskSourceLookup(def) {
+	for _, def := range parser.Registry {
+		if def.IDPrefix == "" ||
+			!agentHasDiskSourceLookup(def) {
+			continue
+		}
+		if !strings.HasPrefix(input, def.IDPrefix) {
+			continue
+		}
 		bareID := strings.TrimPrefix(input, def.IDPrefix)
 		for _, dir := range agentDirs[def.Type] {
 			if findAgentSourceFile(def, dir, bareID) != "" {

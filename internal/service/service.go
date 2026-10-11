@@ -496,12 +496,10 @@ type ToolCallList struct {
 
 // SyncInput carries the payload for a per-session sync.
 // Exactly one of Path or ID must be set.
-// Foreground tries archived refreshes, waits for first imports, and rejects required rebuilds.
 type SyncInput struct {
-	Path       string `json:"path,omitempty"`
-	ID         string `json:"id,omitempty"`
-	Subagents  bool   `json:"subagents,omitempty"`
-	Foreground bool   `json:"foreground,omitempty" doc:"Try archived refreshes without waiting; wait for first imports; reject required archive rebuilds"`
+	Path      string `json:"path,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Subagents bool   `json:"subagents,omitempty"`
 }
 
 // Event is the CLI-side NDJSON wrapper for SSE events from

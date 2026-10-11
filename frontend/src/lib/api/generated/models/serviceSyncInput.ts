@@ -3,8 +3,6 @@
  */
 
 export interface ServiceSyncInput {
-  /** Try archived refreshes without waiting; wait for first imports; reject required archive rebuilds */
-  foreground?: boolean;
   id?: string;
   path?: string;
   subagents?: boolean;

@@ -575,20 +575,13 @@ error that lists every candidate id. The contract is "one session in, one
 At that point the file has already been parsed and every candidate session
 written to the local archive — the ambiguity check runs after the sync engine
 finishes. Re-run `session sync <id>` with the specific session you want; the
-`<id>` form uses the archived session's recorded source path.
+`<id>` form resolves the file path from the archive, so it only works for
+sessions already present there.
 
 - `session sync` uses a writable local daemon when one is running, or starts a
   detached daemon when no compatible daemon is running. It then proxies to
   `POST /api/v1/sessions/sync` so parsing and signal computation remain
-  daemon-owned. Manual sync waits for an active writer and rebuilds a stale
-  archive before indexing. Usage refresh uses `foreground: true` to reject a
-  required rebuild and return stored usage promptly when the writer is busy.
-  First imports wait for the writer. Remote usage refresh requires API 11; `--no-sync` keeps
-  archived reads available on older servers.
-- A daemon with the same binary version and an older API requires a manual
-  restart. Run `agentsview daemon restart` after active daemon work completes,
-  or use `--server URL --no-sync` for archived usage reads. Binary upgrades retain their
-  existing automatic replacement behavior.
+  daemon-owned.
 - If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
   (read-only), sync refuses with a clear error.
 - If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI runs the sync in-process only

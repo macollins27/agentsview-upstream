@@ -1153,7 +1153,6 @@ func TestSyncSingleSessionKeepsRetryStatePerResult(t *testing.T) {
 		t.Context(),
 		parser.DiscoveredFile{Path: sourcePath, Agent: parser.AgentCowork},
 		"cowork:current",
-		nil,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, db.CurrentDataVersion(),

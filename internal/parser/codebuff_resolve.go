@@ -10,8 +10,6 @@
 package parser
 
 import (
-	"context"
-	"errors"
 	"os"
 	"path/filepath"
 )
@@ -75,28 +73,14 @@ func FindCodebuffFreebuffMatches(
 	pairs []CodebuffFamilyRoots,
 	rawID string,
 ) []CodebuffFamilyMatch {
-	matches, _ := FindCodebuffFreebuffMatchesContext(context.Background(), pairs, rawID)
-	return matches
-}
-
-// FindCodebuffFreebuffMatchesContext retains lookup failures for targeted imports.
-func FindCodebuffFreebuffMatchesContext(ctx context.Context, pairs []CodebuffFamilyRoots, rawID string) ([]CodebuffFamilyMatch, error) {
 	if !isSafeSinglePathComponent(rawID) {
-		return nil, nil
+		return nil
 	}
 	var out []CodebuffFamilyMatch
-	var lookupErr error
 	for _, p := range pairs {
 		for _, root := range p.Roots {
-			if err := ctx.Err(); err != nil {
-				return out, err
-			}
 			projects, err := os.ReadDir(root)
 			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-				lookupErr = errors.Join(lookupErr, err)
 				continue
 			}
 			for _, project := range projects {
@@ -111,10 +95,6 @@ func FindCodebuffFreebuffMatchesContext(ctx context.Context, pairs []CodebuffFam
 					continue
 				}
 				if _, err := os.Stat(chatPath); err != nil {
-					if errors.Is(err, os.ErrNotExist) {
-						continue
-					}
-					lookupErr = errors.Join(lookupErr, err)
 					continue
 				}
 				out = append(out, CodebuffFamilyMatch{
@@ -125,5 +105,5 @@ func FindCodebuffFreebuffMatchesContext(ctx context.Context, pairs []CodebuffFam
 			}
 		}
 	}
-	return out, lookupErr
+	return out
 }

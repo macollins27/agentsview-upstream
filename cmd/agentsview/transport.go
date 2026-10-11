@@ -453,7 +453,7 @@ func longLivedDaemonCompatibilityError(err error) error {
 func shouldReplaceIncompatibleDaemonRuntime(
 	rt *DaemonRuntime, currentVersion string,
 ) bool {
-	if rt == nil || rt.API > daemonAPIVersion {
+	if rt == nil {
 		return false
 	}
 	if !shouldReplaceDaemonRuntime(rt, currentVersion) {

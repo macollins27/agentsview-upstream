@@ -24,21 +24,6 @@ func s3ProviderFor(agent parser.AgentType) (parser.S3Provider, bool) {
 	return lookupS3Provider(agent)
 }
 
-func applyS3DiscoveredSource(file *parser.DiscoveredFile, source parser.SourceRef) {
-	if s3, ok := source.Opaque.(parser.S3DiscoveredSource); ok {
-		file.Machine = s3.Machine
-		file.SourceSize = s3.Size
-		file.SourceMtime = s3.MtimeNS
-		file.SourceFingerprint = s3.Fingerprint
-		file.TranscriptSize = s3.TranscriptSize
-		file.TranscriptMtime = s3.TranscriptMtimeNS
-		file.ProviderProcess = false
-		if file.Project == "" {
-			file.Project = s3.Project
-		}
-	}
-}
-
 func s3SourceFileInfo(file parser.DiscoveredFile) (os.FileInfo, error) {
 	size := file.SourceSize
 	mtime := file.SourceMtime
@@ -448,13 +433,6 @@ func (e *Engine) SyncS3SubagentTranscriptsContext(
 	ctx context.Context, parentSessionID string, parentAgent parser.AgentType,
 	paths []string,
 ) error {
-	return e.syncS3SubagentTranscriptsContext(ctx, parentSessionID, parentAgent, paths, false)
-}
-
-func (e *Engine) syncS3SubagentTranscriptsContext(
-	ctx context.Context, parentSessionID string, parentAgent parser.AgentType,
-	paths []string, foreground bool,
-) error {
 	if e.sourceSyncErr != nil {
 		return e.sourceSyncErr
 	}
@@ -464,9 +442,7 @@ func (e *Engine) syncS3SubagentTranscriptsContext(
 	if !isClaudeFormatAgent(parentAgent) {
 		return fmt.Errorf("sync s3 subagent transcripts: unsupported parent agent %q", parentAgent)
 	}
-	if err := e.lockTargetedSync(ctx, foreground); err != nil {
-		return err
-	}
+	e.syncMu.Lock()
 	synced := false
 	sessionsChanged := false
 	// Defers run LIFO: emit runs after syncMu.Unlock, matching the
@@ -508,7 +484,7 @@ func (e *Engine) syncS3SubagentTranscriptsContext(
 			file.Project = parentProject
 		}
 		preserved, sourceSessionsChanged, err := e.processAndWriteSessionFile(
-			ctx, file, childID, nil,
+			ctx, file, childID,
 		)
 		sessionsChanged = sessionsChanged || sourceSessionsChanged
 		if err != nil {

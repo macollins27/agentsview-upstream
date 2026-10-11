@@ -101,14 +101,19 @@ func sessionUsageDataForCommand(
 		if err != nil {
 			return nil, tokenUseExitErr, err
 		}
-		if !query.OwnOnly || !query.NoSync {
-			if err := requireRemoteUsageSupport(
-				ctx, remote, token, query,
+		if !query.OwnOnly {
+			if err := requireRemoteSubagentUsageSupport(
+				ctx, remote, token,
 			); err != nil {
 				return nil, tokenUseExitErr, err
 			}
 		}
-		return httpSessionUsageData(ctx, remote, token, query, false, false)
+		out, code, err := httpSessionUsageData(ctx, remote, token, query)
+		if errors.Is(err, errSessionNotFound) {
+			fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
+			return nil, tokenUseExitNotFound, nil
+		}
+		return out, code, err
 	}
 	cfg, err := config.LoadPFlags(cmd.Flags())
 	if err != nil {
@@ -139,8 +144,8 @@ func sessionUsageDataForCommand(
 	return backend.SessionUsage(ctx, query)
 }
 
-func requireRemoteUsageSupport(
-	ctx context.Context, baseURL, token string, query sessionUsageQuery,
+func requireRemoteSubagentUsageSupport(
+	ctx context.Context, baseURL, token string,
 ) error {
 	capabilities, err := servicehttp.ProbeHTTPServerCapabilities(
 		ctx, baseURL, token,
@@ -148,10 +153,7 @@ func requireRemoteUsageSupport(
 	if err != nil {
 		return err
 	}
-	if !query.NoSync && capabilities.APIVersion < server.ForegroundSessionSyncAPIVersion {
-		return fmt.Errorf("server API version %d does not support foreground session refresh; upgrade or restart the server after active work completes, or pass --no-sync", capabilities.APIVersion)
-	}
-	if !query.OwnOnly && capabilities.APIVersion < server.SubagentUsageAPIVersion {
+	if capabilities.APIVersion < server.SubagentUsageAPIVersion {
 		return fmt.Errorf(
 			"server API version %d does not support combined subagent usage; "+
 				"upgrade or restart the server, or pass --own-only",
@@ -175,52 +177,27 @@ func httpSessionUsageData(
 	baseURL string,
 	token string,
 	query sessionUsageQuery,
-	localDaemon, allowImport bool,
 ) (*sessionUsageOutput, int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	sessionID := query.SessionID
-	backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
-	var resolvedID string
-	var err error
-	if localDaemon {
-		resolvedID, err = resolveArchivedSessionID(ctx, backend, sessionID)
-	} else {
-		resolvedID, err = resolveServiceSessionID(ctx, backend, sessionID)
-	}
-	sourceOnly := false
-	if errors.Is(err, errSessionNotFound) && !query.NoSync && allowImport {
-		resolvedID, sourceOnly, err = sessionID, true, nil
-	}
-	if err == nil && !query.NoSync {
-		progress, finish := newUsageProgressPrinter(os.Stderr)
-		progress("Refreshing session usage; this may wait for active maintenance. Ctrl+C to cancel")
-		detail, syncErr := backend.Sync(ctx, service.SyncInput{
-			ID: resolvedID, Subagents: !query.OwnOnly, Foreground: true,
-		})
-		finish()
-		if syncErr != nil {
-			if sourceOnly {
-				if errors.Is(syncErr, os.ErrNotExist) {
-					fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
-					return nil, tokenUseExitNotFound, nil
-				}
-				return nil, tokenUseExitErr, fmt.Errorf("refresh session: %w", syncErr)
-			}
-			if !errors.Is(syncErr, db.ErrReadOnly) {
-				fmt.Fprintf(os.Stderr, "warning: refresh incomplete; showing stored usage: %v\n", syncErr)
-			}
-		} else if detail != nil {
-			resolvedID = detail.ID
-		}
-	}
+	resolvedID, err := resolveServiceSessionID(
+		ctx, servicehttp.NewHTTPBackend(baseURL, token, false, ""), sessionID,
+	)
 	if err != nil {
 		if errors.Is(err, errSessionNotFound) {
-			fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
-			return nil, tokenUseExitNotFound, nil
+			return nil, tokenUseExitNotFound, errSessionNotFound
 		}
 		return nil, tokenUseExitErr, err
+	}
+	if !query.NoSync {
+		backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
+		if _, syncErr := backend.Sync(ctx, service.SyncInput{
+			ID: resolvedID, Subagents: !query.OwnOnly,
+		}); syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
+			fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
+		}
 	}
 	// Request the full breakdown so the remote path matches the
 	// shape returned by the direct store paths, and the same subagent
@@ -242,8 +219,7 @@ func httpSessionUsageData(
 	}
 	resp := response.HTTPResponse
 	if resp.StatusCode == http.StatusNotFound {
-		fmt.Fprintf(os.Stderr, "session not found: %s\n", sessionID)
-		return nil, tokenUseExitNotFound, nil
+		return nil, tokenUseExitNotFound, errSessionNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
 		body := response.Body
@@ -346,11 +322,7 @@ func storeSessionUsageData(
 func resolveStoreSessionID(
 	ctx context.Context, store db.Store, sessionID string,
 ) (string, error) {
-	return resolveArchivedSessionID(ctx, service.NewReadOnlyBackend(store), sessionID)
-}
-
-func resolveArchivedSessionID(ctx context.Context, backend service.SessionService, sessionID string) (string, error) {
-	matches, err := backend.FindSessionIDsByRawSuffix(
+	matches, err := store.FindSessionIDsByRawSuffix(
 		ctx, sessionID, tokenUseResolveMatchLimit,
 	)
 	if err != nil {
@@ -370,7 +342,7 @@ func resolveArchivedSessionID(ctx context.Context, backend service.SessionServic
 		return matches[0], nil
 	}
 	return resolveServiceSessionID(
-		ctx, backend, sessionID,
+		ctx, service.NewReadOnlyBackend(store), sessionID,
 	)
 }
 

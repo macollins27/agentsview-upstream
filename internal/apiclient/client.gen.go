@@ -21833,11 +21833,9 @@ type ServiceSessionDetail = service.SessionDetail
 type ServiceSessionList = service.SessionList
 
 type ServiceSyncInput struct {
-	// Foreground Try archived refreshes without waiting; wait for first imports; reject required archive rebuilds
-	Foreground *bool   `json:"foreground,omitempty"`
-	ID         *string `json:"id,omitempty"`
-	Path       *string `json:"path,omitempty"`
-	Subagents  *bool   `json:"subagents,omitempty"`
+	ID        *string `json:"id,omitempty"`
+	Path      *string `json:"path,omitempty"`
+	Subagents *bool   `json:"subagents,omitempty"`
 }
 
 type ServiceToolCall struct {

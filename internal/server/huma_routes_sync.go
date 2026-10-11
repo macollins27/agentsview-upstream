@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"reflect"
@@ -349,10 +348,6 @@ func (s *Server) rejectStaleArchiveForSync() error {
 	if s.localSyncRunner == nil {
 		return nil
 	}
-	return s.rejectStaleArchiveForSessionSync()
-}
-
-func (s *Server) rejectStaleArchiveForSessionSync() error {
 	local, ok := s.db.(*db.DB)
 	if !ok || !local.NeedsResync() {
 		return nil
@@ -360,7 +355,8 @@ func (s *Server) rejectStaleArchiveForSessionSync() error {
 	return huma.ErrorWithHeaders(
 		apiError(
 			http.StatusConflict,
-			"archive data version changed; run agentsview resync or POST /api/v1/resync to rebuild the archive before syncing",
+			"archive data version changed; POST /api/v1/resync to rebuild the "+
+				"archive before syncing",
 		),
 		http.Header{ResyncRequiredHeader: []string{"true"}},
 	)
@@ -1074,14 +1070,10 @@ func (s *Server) humaSyncSession(
 	if in.Body.Subagents && in.Body.ID == "" {
 		return nil, apiError(http.StatusBadRequest, "'subagents' requires 'id'")
 	}
-	if in.Body.Foreground && in.Body.ID == "" {
-		return nil, apiError(http.StatusBadRequest, "'foreground' requires 'id'")
+	if err := s.rejectStaleArchiveForSync(); err != nil {
+		return nil, err
 	}
-	if in.Body.Foreground {
-		if err := s.rejectStaleArchiveForSessionSync(); err != nil {
-			return nil, err
-		}
-	} else if err := s.resyncBeforeSessionSync(ctx); err != nil {
+	if err := s.resyncBeforeSessionSync(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, nil
 		}
@@ -1090,20 +1082,13 @@ func (s *Server) humaSyncSession(
 		}
 		return nil, apiError(http.StatusInternalServerError, err.Error())
 	}
-
 	detail, err := s.sessionSyncService(ctx).Sync(ctx, in.Body)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, apiError(http.StatusNotFound, err.Error())
-		}
 		if errors.Is(err, context.Canceled) {
 			return nil, nil
 		}
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
-		}
-		if errors.Is(err, syncpkg.ErrSyncInProgress) {
-			return nil, apiError(http.StatusConflict, "session refresh unavailable while another sync is running")
 		}
 		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled

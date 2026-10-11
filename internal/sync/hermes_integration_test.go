@@ -12,30 +12,8 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
-	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 )
-
-func TestSessionSyncHermesIDKeepsSharedDatabaseScope(t *testing.T) {
-	root := t.TempDir()
-	stateDB := writeHermesSyncStateDB(t, root)
-	database := dbtest.OpenTestDB(t)
-	engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentHermes: {root}}, DeferStartupMaintenance: true})
-	t.Cleanup(engine.Close)
-	require.NoError(t, engine.SyncSingleSessionContext(t.Context(), "hermes:child"))
-	source, err := sql.Open("sqlite3", stateDB)
-	require.NoError(t, err)
-	t.Cleanup(func() { source.Close() })
-	_, err = source.ExecContext(t.Context(), `INSERT INTO sessions (id, source, started_at) VALUES ('unrelated', 'cli', 1778767200); INSERT INTO messages (session_id, role, content, timestamp) VALUES ('unrelated', 'user', 'keep separate', 1778767210); UPDATE sessions SET output_tokens = 99 WHERE id = 'child'`)
-	require.NoError(t, err)
-	detail, err := service.NewDirectBackend(database, engine).Sync(t.Context(), service.SyncInput{ID: "hermes:child", Foreground: true})
-	require.NoError(t, err)
-	require.NotNil(t, detail)
-	assert.Equal(t, 99, detail.TotalOutputTokens)
-	unrelated, err := database.GetSession(t.Context(), "hermes:unrelated")
-	require.NoError(t, err)
-	assert.Nil(t, unrelated)
-}
 
 func TestSyncAllAttributesHermesSiblingStateDBFromSessionsRoot(t *testing.T) {
 	root := t.TempDir()

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -529,27 +528,16 @@ func (b *httpBackend) Sync(
 	if err != nil {
 		return nil, err
 	}
-	var foreground *bool
-	if in.Foreground {
-		foreground = new(true)
-	}
-	response, err := api.PostAPIV1SessionsSyncWithResponse(ctx, &apiclient.PostAPIV1SessionsSyncRequestOptions{Body: &apiclient.PostAPIV1SessionsSyncBody{Foreground: foreground, ID: new(in.ID), Path: new(in.Path), Subagents: new(in.Subagents)}})
+	response, err := api.PostAPIV1SessionsSyncWithResponse(ctx, &apiclient.PostAPIV1SessionsSyncRequestOptions{Body: &apiclient.PostAPIV1SessionsSyncBody{ID: new(in.ID), Path: new(in.Path), Subagents: new(in.Subagents)}})
 	if response == nil {
 		return nil, err
 	}
 	detail := response.JSON200
-	if response.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("sync: session %s: %w", in.ID, fs.ErrNotExist)
-	}
 	if response.StatusCode == http.StatusNotImplemented {
 		return nil, fmt.Errorf("sync: daemon at %s: %w", b.baseURL, db.ErrReadOnly)
 	}
 	if err := serviceResponseError(response.HTTPResponse, response.Body, err); err != nil {
 		return nil, err
-	}
-
-	if detail == nil || detail.ID == "" {
-		return nil, errors.New("sync: server returned no session detail")
 	}
 
 	detail.WebURL = b.sessionWebURL(detail.ID)

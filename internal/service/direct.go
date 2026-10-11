@@ -536,67 +536,60 @@ func (b *directBackend) Sync(
 	if in.Subagents && in.ID == "" {
 		return nil, errors.New("sync: subagents requires id")
 	}
-	if in.Foreground && in.ID == "" {
-		return nil, errors.New("sync: foreground requires id")
-	}
-
-	syncSingle := b.engine.SyncSingleSessionContext
-	syncCombined := b.engine.SyncSessionWithSubagentsContext
-	importSource := false
-	if in.Foreground && in.ID != "" {
-		archived, err := b.local.GetSession(ctx, in.ID)
-		if err != nil {
+	if in.Subagents {
+		if err := b.engine.SyncSessionWithSubagentsContext(
+			ctx, in.ID,
+		); err != nil {
 			return nil, err
 		}
-		if archived != nil {
-			syncSingle = b.engine.TrySyncSingleSessionContext
-			syncCombined = b.engine.TrySyncSessionWithSubagentsContext
-		} else {
-			importSource = true
-		}
+		return b.Get(ctx, in.ID)
 	}
 
 	path := in.Path
-	if in.ID != "" {
-		if isVibeSessionID(in.ID) && !importSource {
-			path = b.engine.FindSourceFile(ctx, in.ID)
+	if path == "" {
+		storedPath := b.local.GetSessionFilePath(ctx, in.ID)
+		if storedPath == "" {
+			return nil, fmt.Errorf(
+				"sync: no file_path recorded for session %q", in.ID,
+			)
 		}
-		var err error
-		if importSource {
-			in.ID, path, err = b.engine.ImportSessionContext(ctx, in.ID, in.Subagents)
-		} else if in.Subagents {
-			err = syncCombined(ctx, in.ID)
-		} else if in.Foreground {
-			err = syncSingle(ctx, in.ID)
-		} else {
-			storedPath := b.local.GetSessionFilePath(ctx, in.ID)
-			if storedPath == "" {
-				return nil, fmt.Errorf("sync: no file_path recorded for session %q", in.ID)
+		// Visual Studio Copilot stores file_path as a
+		// <traceFile>#<conversationID> virtual key. Stripping it to the
+		// physical trace and syncing the path would reparse every conversation
+		// in that trace, lose the requested conversation's scope, and do
+		// nothing if the representative trace was deleted while the
+		// conversation lives on in a sibling. The single-session path keeps the
+		// conversation scope and follows it across sibling trace files.
+		if _, _, ok := parser.SplitVisualStudioCopilotVirtualPath(storedPath); ok {
+			if err := b.engine.SyncSingleSessionContext(
+				ctx, in.ID,
+			); err != nil {
+				return nil, err
 			}
-			_, _, visualStudio := parser.SplitVisualStudioCopilotVirtualPath(storedPath)
-			_, _, windsurf := parser.SplitWindsurfVirtualPath(storedPath)
-			if !visualStudio && !windsurf {
-				path = parser.ResolveSourceFilePath(storedPath)
-				b.engine.SyncPaths([]string{path})
-			} else {
-				err = syncSingle(ctx, in.ID)
-			}
-		}
-		if err != nil {
-			return nil, err
-		}
-		if in.Subagents && !in.Foreground {
 			return b.Get(ctx, in.ID)
 		}
-	} else {
-		b.engine.SyncPaths([]string{path})
+		if _, _, ok := parser.SplitWindsurfVirtualPath(storedPath); ok {
+			if err := b.engine.SyncSingleSessionContext(
+				ctx, in.ID,
+			); err != nil {
+				return nil, err
+			}
+			return b.Get(ctx, in.ID)
+		}
+		path = parser.ResolveSourceFilePath(storedPath)
+	}
+
+	b.engine.SyncPaths([]string{path})
+
+	id := in.ID
+	if id == "" {
 		resolved, err := b.resolveSessionIDByPath(ctx, path)
 		if err != nil {
 			return nil, err
 		}
-		return b.Get(ctx, resolved)
+		id = resolved
+		return b.Get(ctx, id)
 	}
-	id := in.ID
 
 	detail, err := b.Get(ctx, id)
 	if err != nil || detail != nil {
@@ -608,7 +601,7 @@ func (b *directBackend) Sync(
 	// demoted to the directory-name fallback when meta.json is removed or
 	// becomes unparseable. For a Vibe ID, resolve the file's current session
 	// and confirm it is the replacement before returning it.
-	if !isVibeSessionID(id) || path == "" {
+	if !isVibeSessionID(id) {
 		return nil, syncSessionNotFoundError(id)
 	}
 	resolved, err := b.resolveSessionIDByPath(ctx, path)

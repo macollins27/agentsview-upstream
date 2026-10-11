@@ -1419,20 +1419,6 @@ func TestS3DiscoveredSessionIDUsesProvider(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, s3DiscoveredSessionID(tt.file))
-			def, ok := parser.AgentByType(tt.file.Agent)
-			require.True(t, ok)
-			root := "s3://bucket/laptop/raw/" + string(tt.file.Agent)
-			metadata := parser.S3DiscoveredSource{URI: tt.file.Path, Machine: "laptop", Size: 17, MtimeNS: 3, Fingerprint: "s3-meta:fixture"}
-			provider := &processFixtureProvider{Def: def, discovered: []parser.SourceRef{{Provider: tt.file.Agent, Key: tt.file.Path, DisplayPath: tt.file.Path, Opaque: metadata}}}
-			engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{AgentDirs: map[parser.AgentType][]string{tt.file.Agent: {root}}, ProviderFactories: []parser.ProviderFactory{processFixtureFactory{provider: provider}}, DeferStartupMaintenance: true})
-			t.Cleanup(engine.Close)
-			id, selected, err := engine.findSessionSource(t.Context(), tt.want)
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, id)
-			assert.Equal(t, tt.file.Path, selected.Path)
-			assert.Equal(t, metadata.Size, selected.SourceSize)
-			assert.Equal(t, metadata.MtimeNS, selected.SourceMtime)
-			assert.Equal(t, metadata.Fingerprint, selected.SourceFingerprint)
 		})
 	}
 }

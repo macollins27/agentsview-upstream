@@ -642,8 +642,8 @@ workflow also:
   second index to keep fresh.
 - **Reads committed archive data** — daily reports can run while the daemon
   imports new source changes. Run `agentsview sync` first when those changes
-  must be included. Session usage refreshes the named session and its subagents.
-  Statusline finishes pending startup ingestion before querying.
+  must be included. Session usage refreshes only the named session and its
+  Claude subagents. Unknown IDs and statusline wait for startup ingestion.
 
 ## `agentsview usage daily`
 
@@ -1064,20 +1064,9 @@ when it must include new source changes. Full parser rebuilds serve the retained
 archive with a stale warning; scoped upgrades and schema repairs finish before
 the daemon serves requests.
 
-`session usage` and `token-use` refresh only the named session and its subagents,
-without requesting full startup ingestion. `--own-only` refreshes just the
-named session. A newly started daemon still runs deferred background ingestion.
-Local daemon lookups can import a session from configured local or S3 sources.
-`--server` resolves IDs only from the remote archive.
-`usage statusline` completes pending startup ingestion before querying, including
-when a previous daily report started the daemon. Later statusline queries rely
-on the daemon's file watcher for source changes.
-
-While another sync owns the writer or the archive needs a rebuild, session usage
-returns stored usage with a refresh warning. First imports wait for the writer
-and show progress on stderr; Ctrl+C cancels the wait.
-An unarchived session reports the rebuild cause when the archive is stale.
-Run `agentsview resync` when a rebuild is required.
+`session usage` and `token-use` refresh the named session and its Claude subagents.
+`--own-only` excludes subagents. Unknown IDs wait for startup ingestion once.
+Pending rebuilds return stored usage with a warning. Statusline still waits.
 
 `--no-sync` skips source refresh and starts any new daemon without automatic
 sync. It does not disable sync on an already-running daemon. `--offline` reads

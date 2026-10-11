@@ -141,7 +141,8 @@ func resolveArchiveQueryTransport(
 	policy archiveQueryPolicy,
 ) (transport, error) {
 	if policy.AutoStart && !policy.NoSync {
-		// Queries with their own refresh can defer routine startup ingestion.
+		// Daily reports can read committed data while sync runs after
+		// readiness. Session-specific commands still need startup ingestion.
 		cfg.SkipInitialSync = policy.SkipInitialSync
 		return ensureTransportContext(ctx, cfg, transportIntentArchiveWrite, 0)
 	}
@@ -224,7 +225,22 @@ func (b daemonArchiveQueryBackend) SessionUsage(
 	ctx context.Context,
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
-	return httpSessionUsageData(ctx, b.tr.URL, b.authToken, query, true, !b.tr.ReadOnly)
+	out, code, err := httpSessionUsageData(ctx, b.tr.URL, b.authToken, query)
+	if errors.Is(err, errSessionNotFound) && !query.NoSync && !b.tr.ReadOnly {
+		progress := newResyncProgressPrinter(os.Stderr, time.Now)
+		_, err = postDaemonPush[sync.SyncStats](ctx, b.tr, b.authToken,
+			startupSyncOperation, apiclient.DaemonPushRequest{}, progress.Print)
+		progress.Finish()
+		if err != nil {
+			return nil, tokenUseExitErr, fmt.Errorf("waiting for startup sync: %w", err)
+		}
+		out, code, err = httpSessionUsageData(ctx, b.tr.URL, b.authToken, query)
+	}
+	if errors.Is(err, errSessionNotFound) {
+		fmt.Fprintf(os.Stderr, "session not found: %s\n", query.SessionID)
+		return nil, tokenUseExitNotFound, nil
+	}
+	return out, code, err
 }
 
 func (b daemonArchiveQueryBackend) MachineLabels(
@@ -309,42 +325,30 @@ func (b localArchiveQueryBackend) SessionUsage(
 	)
 
 	if known && !b.skipFreshData && !query.NoSync {
-		if b.database.NeedsResync() {
-			refreshErr := errors.New("archive data version changed; run agentsview resync before refreshing session usage")
-			archived, err := b.database.GetSession(ctx, resolvedID)
-			if err != nil {
-				return nil, tokenUseExitErr, err
-			}
-			if archived == nil {
-				return nil, tokenUseExitErr, refreshErr
-			}
-			fmt.Fprintf(os.Stderr, "warning: refresh incomplete; showing stored usage: %v\n", refreshErr)
+		engine := sync.NewEngine(ctx, b.database, sync.EngineConfig{
+			AgentDirs:               b.cfg.AgentDirs,
+			SourceMachines:          b.cfg.SourceMachines,
+			ProviderMetadata:        b.cfg.ProviderMetadata,
+			DisabledAgents:          b.cfg.DisabledAgents,
+			IncludeCwdPrefixes:      b.cfg.SyncIncludeCwdPrefixes,
+			ScanProtectedPaths:      b.cfg.ScanProtectedPaths,
+			Machine:                 b.cfg.InstallationID,
+			BlockedResultCategories: b.cfg.ResultContentBlockedCategories,
+			ArchiveContent:          b.cfg.ArchiveContent,
+		})
+		var syncErr error
+		if query.OwnOnly {
+			syncErr = engine.SyncSingleSessionContext(ctx, resolvedID)
 		} else {
-			engine := sync.NewEngine(ctx, b.database, sync.EngineConfig{
-				AgentDirs:               b.cfg.AgentDirs,
-				SourceMachines:          b.cfg.SourceMachines,
-				ProviderMetadata:        b.cfg.ProviderMetadata,
-				DisabledAgents:          b.cfg.DisabledAgents,
-				IncludeCwdPrefixes:      b.cfg.SyncIncludeCwdPrefixes,
-				ScanProtectedPaths:      b.cfg.ScanProtectedPaths,
-				Machine:                 b.cfg.InstallationID,
-				BlockedResultCategories: b.cfg.ResultContentBlockedCategories,
-				ArchiveContent:          b.cfg.ArchiveContent,
-			})
-			var syncErr error
-			if query.OwnOnly {
-				syncErr = engine.SyncSingleSessionContext(ctx, resolvedID)
-			} else {
-				syncErr = engine.SyncSessionWithSubagentsContext(ctx, resolvedID)
-			}
-			if syncErr != nil {
-				fmt.Fprintf(os.Stderr,
-					"warning: sync failed: %v\n", syncErr)
-			}
-			// Flush pending debounced signal recomputes before the
-			// usage query reads the session.
-			engine.Close()
+			syncErr = engine.SyncSessionWithSubagentsContext(ctx, resolvedID)
 		}
+		if syncErr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: sync failed: %v\n", syncErr)
+		}
+		// Flush pending debounced signal recomputes before the
+		// usage query reads the session.
+		engine.Close()
 	}
 
 	load := func() (*db.SessionUsage, error) {
