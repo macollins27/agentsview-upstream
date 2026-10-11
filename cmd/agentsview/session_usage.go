@@ -210,7 +210,7 @@ func httpSessionUsageData(
 			apiVersion = capabilities.APIVersion
 		}
 		if syncErr == nil && apiVersion < server.TargetedSessionSyncAPIVersion {
-			syncErr = fmt.Errorf("server API version %d cannot refresh sessions without rebuilding a stale archive; run agentsview daemon restart or upgrade the server", apiVersion)
+			syncErr = fmt.Errorf("server API version %d predates targeted session refresh; run agentsview daemon restart or upgrade the server", apiVersion)
 		}
 		if syncErr == nil {
 			_, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: true})

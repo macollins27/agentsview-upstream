@@ -152,13 +152,13 @@ func TestSessionUsageStartedDaemonImportsCodexChild(t *testing.T) {
 	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
 	seedUsageSession(t, database, "codex:parent-a", "project", "codex", 10)
 	const timestamp = "2026-01-01T00:00:00Z"
-	child := strings.Join([]string{
+	child := testjsonl.JoinJSONL(
 		testjsonl.CodexSubagentSessionMetaJSON("child-a", "parent-a", "/project", "codex_cli_rs", timestamp),
 		testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
 		testjsonl.CodexMsgJSON("user", "child task", timestamp),
 		testjsonl.CodexMsgJSON("assistant", "child result", timestamp),
 		testjsonl.CodexTokenCountJSON(timestamp, 100, 42, 0),
-	}, "\n") + "\n"
+	)
 	require.NoError(t, os.WriteFile(filepath.Join(codexDir, "rollout-child-a.jsonl"), []byte(child), 0o600))
 	engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{
 		AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true,

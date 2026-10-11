@@ -1803,6 +1803,20 @@ func TestHumaSyncSessionLocalNoSyncRejectsStaleDB(t *testing.T) {
 
 	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
 	assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader))
+	engine := syncpkg.NewEngine(t.Context(), f.db, syncpkg.EngineConfig{
+		Machine: "local", DeferStartupMaintenance: true,
+	})
+	t.Cleanup(engine.Close)
+	f.srv.engine = engine
+	for _, completed := range []bool{false, true} {
+		if completed {
+			engine.RecordStartupReconciled(syncpkg.SyncStats{}, errors.New("startup discovery failed"))
+		}
+		w = serveJSON(t, f.handler, http.MethodPost, "/api/v1/sessions/sync",
+			service.SyncInput{ID: "session", Subagents: true})
+		require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
+		assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader))
+	}
 	assert.True(t, f.db.NeedsResync())
 	session, err := f.db.GetSession(t.Context(), "session")
 	require.NoError(t, err)

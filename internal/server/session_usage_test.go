@@ -3,6 +3,7 @@ package server_test
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -622,7 +623,8 @@ func TestHandleSessionUsage_SubagentsRefreshesNewLocalTranscript(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, child, "pending startup unexpectedly synced the subagent transcript")
 
-	te.engine.RecordStartupReconciled(syncpkg.SyncStats{}, nil)
+	te.engine.RecordStartupReconciled(syncpkg.SyncStats{}, errors.New("startup discovery failed"))
+	assert.False(t, te.engine.StartupReconciled())
 	synced := te.post(t, "/api/v1/sessions/sync", body)
 	assertStatus(t, synced, http.StatusOK)
 

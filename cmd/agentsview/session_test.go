@@ -1681,6 +1681,8 @@ func TestSessionUsage_OlderServerSkipsRefresh(t *testing.T) {
 			})
 			assert.Contains(t, stderr, "warning:")
 			assert.Contains(t, stderr, "server API version 10")
+			assert.Contains(t, stderr, "predates targeted session refresh")
+			assert.NotContains(t, stderr, "stale archive")
 			assert.Contains(t, stderr, "agentsview daemon restart")
 			assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
 			assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
