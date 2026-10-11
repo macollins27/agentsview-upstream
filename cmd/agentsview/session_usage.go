@@ -201,7 +201,7 @@ func httpSessionUsageData(
 	if !query.NoSync && !query.OwnOnly {
 		backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
 		var syncErr error
-		apiVersion := 0
+		var apiVersion int
 		if tr.Runtime != nil {
 			apiVersion = tr.Runtime.API
 		} else {

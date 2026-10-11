@@ -1650,7 +1650,7 @@ func TestSessionUsage_StaleArchiveReturnsStoredUsage(t *testing.T) {
 
 func TestSessionUsage_OlderServerSkipsRefresh(t *testing.T) {
 	for _, remote := range []bool{false, true} {
-		t.Run(fmt.Sprint(remote), func(t *testing.T) {
+		t.Run(strconv.FormatBool(remote), func(t *testing.T) {
 			dataDir := newAgentDataDir(t)
 			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a", apiVersion: 10})
 			if !remote {
@@ -1690,7 +1690,7 @@ func TestSessionUsage_OlderServerSkipsRefresh(t *testing.T) {
 
 func TestSessionUsage_MissingSessionStartupRetry(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusConflict, http.StatusInternalServerError} {
-		t.Run(fmt.Sprint(status), func(t *testing.T) {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			startupCalls, refreshCalls := 0, 0
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
@@ -1712,7 +1712,7 @@ func TestSessionUsage_MissingSessionStartupRetry(t *testing.T) {
 					writeJSONResponse(w, `{"session_id":"codex:missing","has_token_data":true,"total_output_tokens":42}`)
 				case "/api/v1/sessions/sync":
 					refreshCalls++
-					t.Error("startup retry must read ingested usage without another refresh")
+					assert.Fail(t, "startup retry must read ingested usage without another refresh")
 				default:
 					http.NotFound(w, r)
 				}
