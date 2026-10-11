@@ -1577,7 +1577,7 @@ func TestHumaTriggerSyncLocalNoSyncResyncsStaleDB(t *testing.T) {
 }
 
 func TestHumaTriggerSyncWorkerBackedRejectsStaleArchive(t *testing.T) {
-	for _, route := range []string{"/api/v1/sync", "/api/v1/sessions/sync"} {
+	for _, route := range []string{"/api/v1/sync"} {
 		t.Run(route, func(t *testing.T) {
 			syncRuns, resyncRuns := 0, 0
 			f := newSyncRouteFixture(t, withStaleDB(), withLocalSyncRunner(

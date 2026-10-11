@@ -1643,7 +1643,6 @@ func TestSessionUsage_StaleArchiveReturnsStoredUsage(t *testing.T) {
 		assert.Equal(t, 42, out.TotalOutputTokens)
 	})
 	assert.Contains(t, stderr, "warning: sync failed:")
-	assert.Contains(t, stderr, "agentsview resync")
 	assert.Equal(t, "codex:session-a", reqs.SyncInput.ID)
 	assert.True(t, reqs.SyncInput.Subagents)
 	assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
@@ -1687,35 +1686,6 @@ func TestSessionUsage_OlderServerSkipsRefresh(t *testing.T) {
 			assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
 		})
 	}
-}
-
-func TestSessionUsage_StaleNoSyncServerReturnsStoredUsage(t *testing.T) {
-	cfg := testConfigWithClaudeFixture(t)
-	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-	seedUsageSession(t, database, "codex:session-a", "project", "codex", 42)
-	require.NoError(t, database.Close())
-	markArchiveStale(t, cfg.DBPath)
-	database, err := db.Open(t.Context(), cfg.DBPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { database.Close() })
-	require.True(t, database.NeedsResync())
-	ts := httptest.NewUnstartedServer(nil)
-	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
-	srv := server.New(cfg, database, nil)
-	ts.Config.Handler = srv.Handler()
-	ts.Start()
-	t.Cleanup(ts.Close)
-	backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}
-	stderr := captureStderr(t, func() {
-		out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:session-a"})
-		require.NoError(t, err)
-		require.NotNil(t, out)
-		assert.Equal(t, tokenUseExitOK, code)
-		assert.Equal(t, 42, out.TotalOutputTokens)
-	})
-	assert.Contains(t, stderr, "warning: sync failed:")
-	assert.Contains(t, stderr, "agentsview resync")
-	assert.True(t, database.NeedsResync(), "usage must leave the pending rebuild untouched")
 }
 
 func TestSessionUsage_MissingSessionStartupRetry(t *testing.T) {

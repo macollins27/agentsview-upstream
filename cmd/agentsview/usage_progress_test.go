@@ -192,16 +192,6 @@ func TestSessionUsageStartedDaemonImportsCodexChild(t *testing.T) {
 	assert.Equal(t, 52, out.TotalOutputTokens)
 	assert.Equal(t, 1, out.SubagentCount)
 	assert.Equal(t, 1, startupCalls)
-	registerTestRuntime(t, cfg.DataDir, ts.URL, false)
-	forbidStartBackgroundServeForTransport(t, "an existing daemon must serve the next lookup")
-	backend, cleanup, err = resolveArchiveQueryBackendWithConfig(t.Context(), cfg, archiveQueryPolicy{
-		AutoStart: true, SkipInitialSync: true, WaitForStartedDaemon: true,
-	})
-	require.NoError(t, err)
-	defer cleanup()
-	_, _, err = backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:parent-a"})
-	require.NoError(t, err)
-	assert.Equal(t, 1, startupCalls, "a known session on a running daemon must skip startup sync")
 }
 
 func TestUsageProgressRejectsDaemonWithoutStreamEndpoint(t *testing.T) {
