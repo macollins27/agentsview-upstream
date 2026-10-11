@@ -909,7 +909,9 @@ did before.
 
 Before querying, the local backend refreshes the session's own transcript and
 the `agent-*.jsonl` files under its `subagents/` directory, so a session that
-just finished reports complete numbers. `--own-only` skips the subagent refresh.
+just finished reports complete numbers. With `--own-only`, HTTP/daemon queries
+read stored usage without refreshing; direct queries without a daemon refresh
+the named transcript.
 
 Pass `--no-sync` to read archived usage without refreshing source transcripts.
 This preserves the full subagent rollup and the exit codes above; combine it

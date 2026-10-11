@@ -1068,9 +1068,10 @@ the daemon serves requests.
 
 `session usage` and `token-use` refresh the named session and its subagents.
 A daemon the command starts finishes startup ingestion first. A running daemon
-waits only for an unknown ID, once. `--own-only` reads stored usage without a
-targeted refresh and excludes subagents. If a stale archive refuses the refresh,
-the command shows stored usage with a warning. IDs still missing return
+waits only for an unknown ID, once. `--own-only` excludes subagents. HTTP/daemon
+queries with `--own-only` read stored usage without refreshing; direct queries
+without a daemon refresh the named transcript. If a stale archive refuses the
+refresh, the command shows stored usage with a warning. IDs still missing return
 "session not found" and exit 2. Older servers skip the refresh with a warning to
 restart or upgrade. Statusline still waits.
 

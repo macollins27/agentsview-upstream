@@ -1067,6 +1067,9 @@ func (s *Server) humaSyncSession(
 	if in.Body.Subagents && in.Body.ID == "" {
 		return nil, apiError(http.StatusBadRequest, "'subagents' requires 'id'")
 	}
+	if in.Body.Subagents && s.engine != nil && !s.engine.StartupReconciled() {
+		return nil, apiError(http.StatusConflict, "startup ingestion is pending")
+	}
 	if err := s.rejectStaleArchiveForSync(); err != nil {
 		return nil, err
 	}

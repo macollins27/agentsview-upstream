@@ -15,6 +15,8 @@ import (
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/money"
+	"go.kenn.io/agentsview/internal/server"
+	syncpkg "go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
@@ -612,6 +614,15 @@ func TestHandleSessionUsage_SubagentsRefreshesNewLocalTranscript(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, child, "foreign-origin sync unexpectedly wrote archive data")
 
+	pending := te.post(t, "/api/v1/sessions/sync", body)
+	assertStatus(t, pending, http.StatusConflict)
+	assert.Contains(t, pending.Body.String(), "startup ingestion is pending")
+	assert.Empty(t, pending.Header().Get(server.ResyncRequiredHeader))
+	child, err = te.db.GetSession(ctx, "agent-worker1")
+	require.NoError(t, err)
+	assert.Nil(t, child, "pending startup unexpectedly synced the subagent transcript")
+
+	te.engine.RecordStartupReconciled(syncpkg.SyncStats{}, nil)
 	synced := te.post(t, "/api/v1/sessions/sync", body)
 	assertStatus(t, synced, http.StatusOK)
 
