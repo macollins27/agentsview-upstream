@@ -1655,7 +1655,17 @@ func TestSessionUsage_OlderServerSkipsRefresh(t *testing.T) {
 			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a", apiVersion: 10})
 			if !remote {
 				t.Setenv("AGENTSVIEW_NO_DAEMON", "1")
-				wrapped := sessionUsageRuntimeServer(t, ts.Config.Handler.ServeHTTP)
+				// sessionUsageRuntimeServer answers startup syncs itself, so
+				// forward them to the recording handler for the assertion below.
+				ping := daemon.NewPingHandler(daemon.PingHandlerOptions{Service: daemonService, Version: "test"})
+				wrapped := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/api/ping" {
+						ping.ServeHTTP(w, r)
+						return
+					}
+					ts.Config.Handler.ServeHTTP(w, r)
+				}))
+				t.Cleanup(wrapped.Close)
 				rt := daemonRuntimeFromTestURL(t, wrapped.URL)
 				rec := incompatibleRuntimeRecord(rt.Host, rt.Port, version, false)
 				rec.Metadata[runtimeAPIVersion] = "10"
