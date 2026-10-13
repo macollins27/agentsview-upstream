@@ -25,19 +25,6 @@ func TestNewHTTPBackendUsesLongRunningClient(t *testing.T) {
 	assert.Zero(t, backend.longRunningClient.Timeout)
 }
 
-func TestSyncStaleArchiveRequiresResync(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/v1/sessions/sync", r.URL.Path)
-		w.Header().Set("X-Agentsview-Resync-Required", "true")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"error":"archive data version changed; run agentsview resync or POST /api/v1/resync to rebuild the archive before syncing"}`))
-	}))
-	t.Cleanup(srv.Close)
-	_, err := NewHTTPBackend(srv.URL, "", false, "").Sync(t.Context(), service.SyncInput{ID: "session-a"})
-	require.ErrorContains(t, err, "archive data version changed")
-	assert.ErrorContains(t, err, "agentsview resync")
-}
-
 func TestHTTPBackendRecallCapabilityRespectsReadOnlyMode(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

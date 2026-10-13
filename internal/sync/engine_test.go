@@ -10097,88 +10097,87 @@ func TestEngine_TryRunExclusiveRejectsBusySyncWithoutRunningWork(t *testing.T) {
 
 		require.ErrorIs(t, err, ErrSyncInProgress)
 		assert.False(t, workRan)
-		for _, refresh := range []func() error{
-			func() error { return engine.syncSingleSessionContext(t.Context(), "parent", false) },
-			func() error { return engine.SyncSessionWithSubagentsContext(t.Context(), "parent") },
-			func() error { return engine.syncPathsContext(t.Context(), nil, false, false) },
-			func() error {
-				return engine.SyncS3SubagentTranscriptsContext(t.Context(), "parent", parser.AgentClaude, nil)
-			},
-		} {
-			assert.ErrorIs(t, refresh(), ErrSyncInProgress)
-		}
 		release <- struct{}{}
 		require.NoError(t, <-done)
 	})
 }
 
 func TestGeneralSessionRefreshWaitsForBusyLock(t *testing.T) {
-	engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
-	t.Cleanup(engine.Close)
-	engine.syncMu.Lock()
-	started := make(chan struct{})
-	done := make(chan error, 1)
-	go func() {
-		close(started)
-		done <- engine.SyncSingleSessionContext(t.Context(), "parent")
-	}()
-	<-started
-	time.Sleep(20 * time.Millisecond)
-	select {
-	case err := <-done:
-		engine.syncMu.Unlock()
-		require.FailNow(t, "general refresh returned before the lock was released", "%v", err)
-	default:
-	}
-	engine.syncMu.Unlock()
-	select {
-	case err := <-done:
-		assert.NotErrorIs(t, err, ErrSyncInProgress)
-	case <-time.After(time.Second):
-		require.FailNow(t, "general refresh did not finish after the lock was released")
-	}
-}
-
-func TestTargetedRefreshWaitsForBriefContention(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
 		t.Cleanup(engine.Close)
 		engine.syncMu.Lock()
+		started := make(chan struct{})
+		done := make(chan error, 1)
 		go func() {
-			time.Sleep(20 * time.Millisecond)
-			engine.syncMu.Unlock()
+			started <- struct{}{}
+			done <- engine.SyncSingleSessionContext(t.Context(), "parent")
 		}()
-		require.NoError(t, engine.syncPathsContext(t.Context(), nil, false, false))
-		engine.syncMu.Lock()
-		go func() {
-			time.Sleep(20 * time.Millisecond)
+		<-started
+		// Mutex waits do not advance virtual time, so yield before releasing the lock.
+		runtime.Gosched()
+		select {
+		case err := <-done:
 			engine.syncMu.Unlock()
-		}()
-		require.NoError(t, engine.SyncS3SubagentTranscriptsContext(
-			t.Context(), "parent", parser.AgentClaude, nil,
-		))
+			require.FailNow(t, "general refresh returned before the lock was released", "%v", err)
+		default:
+		}
+		engine.syncMu.Unlock()
+		assert.NotErrorIs(t, <-done, ErrSyncInProgress)
 	})
 }
 
-func TestTargetedRefreshReturnsBusyAfterBoundedWait(t *testing.T) {
-	for _, s3 := range []bool{false, true} {
-		t.Run(fmt.Sprintf("s3=%t", s3), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
-				t.Cleanup(engine.Close)
-				engine.syncMu.Lock()
-				defer engine.syncMu.Unlock()
-				start := time.Now()
-				var err error
-				if s3 {
-					err = engine.SyncS3SubagentTranscriptsContext(t.Context(), "parent", parser.AgentClaude, nil)
-				} else {
-					err = engine.SyncSingleSessionForUsageContext(t.Context(), "parent")
-				}
-				require.ErrorIs(t, err, ErrSyncInProgress)
-				assert.Equal(t, 250*time.Millisecond, time.Since(start))
+func TestTargetedRefreshLockWait(t *testing.T) {
+	for _, entry := range []struct {
+		name string
+		run  func(context.Context, *Engine) error
+	}{
+		{"usage", func(ctx context.Context, e *Engine) error { return e.SyncSingleSessionForUsageContext(ctx, "parent") }},
+		{"paths", func(ctx context.Context, e *Engine) error { return e.syncPathsContext(ctx, nil, false, false) }},
+		{"s3", func(ctx context.Context, e *Engine) error {
+			return e.SyncS3SubagentTranscriptsContext(ctx, "parent", parser.AgentClaude, nil)
+		}},
+		{"subagents", func(ctx context.Context, e *Engine) error { return e.SyncSessionWithSubagentsContext(ctx, "parent") }},
+	} {
+		for _, outcome := range []string{"release", "busy", "cancel"} {
+			t.Run(entry.name+"/"+outcome, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
+					t.Cleanup(engine.Close)
+					engine.syncMu.Lock()
+					if outcome != "release" {
+						defer engine.syncMu.Unlock()
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					if outcome != "busy" {
+						go func() {
+							time.Sleep(20 * time.Millisecond)
+							if outcome == "release" {
+								engine.syncMu.Unlock()
+							} else {
+								cancel()
+							}
+						}()
+					}
+					start := time.Now()
+					err := entry.run(ctx, engine)
+					switch outcome {
+					case "release":
+						assert.NotErrorIs(t, err, ErrSyncInProgress)
+						assert.NotErrorIs(t, err, context.Canceled)
+						assert.GreaterOrEqual(t, time.Since(start), 20*time.Millisecond)
+						assert.Less(t, time.Since(start), 250*time.Millisecond)
+					case "busy":
+						require.ErrorIs(t, err, ErrSyncInProgress)
+						assert.Equal(t, 250*time.Millisecond, time.Since(start))
+					case "cancel":
+						require.ErrorIs(t, err, context.Canceled)
+						assert.Equal(t, 20*time.Millisecond, time.Since(start))
+					}
+				})
 			})
-		})
+		}
 	}
 }
 
@@ -10221,21 +10220,6 @@ func TestSubagentRefreshMarksContentionAfterParentAsIncomplete(t *testing.T) {
 	assert.Contains(t, err.Error(), "usage aggregate may be incomplete")
 	releaseLock()
 	require.NoError(t, <-lockDone)
-}
-
-func TestTargetedRefreshCancelsLockWait(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
-		t.Cleanup(engine.Close)
-		engine.syncMu.Lock()
-		defer engine.syncMu.Unlock()
-		ctx, cancel := context.WithCancel(t.Context())
-		go func() {
-			time.Sleep(20 * time.Millisecond)
-			cancel()
-		}()
-		require.ErrorIs(t, engine.SyncSessionWithSubagentsContext(ctx, "parent"), context.Canceled)
-	})
 }
 
 func TestEngine_ZeroSyncedSuccessfulResyncEmits(t *testing.T) {

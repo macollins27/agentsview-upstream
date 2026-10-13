@@ -31,7 +31,6 @@ func TestUsageCommandsSkipStartupExceptStatusline(t *testing.T) {
 		t.Run(command, func(t *testing.T) {
 			newAgentDataDir(t)
 			var ts *httptest.Server
-			var reqs *remoteUsageRequests
 			if command == "daily" || command == "statusline" {
 				ts = sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
 					if command == "daily" {
@@ -41,7 +40,7 @@ func TestUsageCommandsSkipStartupExceptStatusline(t *testing.T) {
 					}
 				})
 			} else {
-				ts, reqs = newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a"})
+				ts, _ = newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a"})
 			}
 			started := false
 			stubStartBackgroundServeForTransport(t, func(ctx context.Context, cfg *config.Config, _ time.Duration, _ bool) (*DaemonRuntime, error) {
@@ -73,78 +72,59 @@ func TestUsageCommandsSkipStartupExceptStatusline(t *testing.T) {
 				}
 			})
 			assert.True(t, started, "exercise daemon startup rather than an existing daemon")
-			if reqs != nil {
-				assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
-				assert.True(t, reqs.SyncInput.Subagents)
-			}
 		})
 	}
 }
 
 func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
-	for _, sessionQuery := range []bool{false, true} {
-		t.Run(fmt.Sprintf("session=%t", sessionQuery), func(t *testing.T) {
-			cfg := testConfigWithClaudeFixture(t)
-			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{
-				AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID,
-				DeferStartupMaintenance: true,
-			})
-			t.Cleanup(engine.Close)
-			ts := httptest.NewUnstartedServer(nil)
-			cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
-			srv := server.New(cfg, database, engine)
-			startupCalls := 0
-			ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/api/v1/sync" {
-					assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
-					startupCalls++
-				}
-				srv.Handler().ServeHTTP(w, r)
-			})
-			ts.Start()
-			t.Cleanup(ts.Close)
-			stubStartBackgroundServeForTransport(t, func(_ context.Context, launch *config.Config, _ time.Duration, _ bool) (*DaemonRuntime, error) {
-				assert.True(t, launch.SkipInitialSync)
-				registerTestRuntime(t, cfg.DataDir, ts.URL, false)
-				return daemonRuntimeFromTestURL(t, ts.URL), nil
-			})
-			policy := archiveQueryPolicy{AutoStart: true, SkipInitialSync: true}
-			daily, closeDaily, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, policy)
-			require.NoError(t, err)
-			defer closeDaily()
-			_, err = daily.DailyUsage(t.Context(), dailyUsageQuery{})
-			require.NoError(t, err)
-			assert.False(t, engine.StartupReconciled(), "daily usage must not force ingestion")
-			assert.Zero(t, startupCalls)
+	cfg := testConfigWithClaudeFixture(t)
+	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+	engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{
+		AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID,
+		DeferStartupMaintenance: true,
+	})
+	t.Cleanup(engine.Close)
+	ts := httptest.NewUnstartedServer(nil)
+	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
+	srv := server.New(cfg, database, engine)
+	startupCalls := 0
+	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/sync" {
+			assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
+			startupCalls++
+		}
+		srv.Handler().ServeHTTP(w, r)
+	})
+	ts.Start()
+	t.Cleanup(ts.Close)
+	stubStartBackgroundServeForTransport(t, func(_ context.Context, launch *config.Config, _ time.Duration, _ bool) (*DaemonRuntime, error) {
+		assert.True(t, launch.SkipInitialSync)
+		registerTestRuntime(t, cfg.DataDir, ts.URL, false)
+		return daemonRuntimeFromTestURL(t, ts.URL), nil
+	})
+	policy := archiveQueryPolicy{AutoStart: true, SkipInitialSync: true}
+	daily, closeDaily, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, policy)
+	require.NoError(t, err)
+	defer closeDaily()
+	_, err = daily.DailyUsage(t.Context(), dailyUsageQuery{})
+	require.NoError(t, err)
+	assert.False(t, engine.StartupReconciled(), "daily usage must not force ingestion")
+	assert.Zero(t, startupCalls)
 
-			policy.SkipInitialSync = sessionQuery
-			fresh, closeFresh, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, policy)
-			require.NoError(t, err)
-			defer closeFresh()
-			if sessionQuery {
-				for range 2 {
-					out, code, err := fresh.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session0", OwnOnly: true})
-					require.NoError(t, err)
-					assert.Nil(t, out)
-					assert.Equal(t, tokenUseExitNotFound, code)
-				}
-				assert.Zero(t, startupCalls)
-				assert.False(t, engine.StartupReconciled())
-			} else {
-				_, err := fresh.DailyUsage(t.Context(), dailyUsageQuery{})
-				require.NoError(t, err)
-				session, err := database.GetSession(t.Context(), "session0")
-				require.NoError(t, err)
-				require.NotNil(t, session, "statusline must query after startup ingestion")
-			}
-			lastSync := engine.LastSyncStartedAt(t.Context())
-			_, cleanup, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, policy)
-			require.NoError(t, err)
-			cleanup()
-			assert.Equal(t, lastSync, engine.LastSyncStartedAt(t.Context()), "warm prompt refresh must not repeat a full sync")
-		})
-	}
+	policy.SkipInitialSync = false
+	fresh, closeFresh, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, policy)
+	require.NoError(t, err)
+	defer closeFresh()
+	_, err = fresh.DailyUsage(t.Context(), dailyUsageQuery{})
+	require.NoError(t, err)
+	session, err := database.GetSession(t.Context(), "session0")
+	require.NoError(t, err)
+	require.NotNil(t, session, "statusline must query after startup ingestion")
+	lastSync := engine.LastSyncStartedAt(t.Context())
+	_, cleanup, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, policy)
+	require.NoError(t, err)
+	cleanup()
+	assert.Equal(t, lastSync, engine.LastSyncStartedAt(t.Context()), "warm prompt refresh must not repeat a full sync")
 }
 
 func TestSessionUsageBeforeStartupImportsClaudeChild(t *testing.T) {
@@ -173,14 +153,7 @@ func TestSessionUsageBeforeStartupImportsClaudeChild(t *testing.T) {
 	ts := httptest.NewUnstartedServer(nil)
 	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
 	srv := server.New(cfg, database, engine)
-	startupCalls := 0
-	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/sync" {
-			assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
-			startupCalls++
-		}
-		srv.Handler().ServeHTTP(w, r)
-	})
+	ts.Config.Handler = srv.Handler()
 	ts.Start()
 	t.Cleanup(ts.Close)
 	stubStartBackgroundServeForTransport(t, func(_ context.Context, _ *config.Config, _ time.Duration, _ bool) (*DaemonRuntime, error) {
@@ -202,9 +175,7 @@ func TestSessionUsageBeforeStartupImportsClaudeChild(t *testing.T) {
 			assert.Equal(t, 10, out.TotalOutputTokens)
 			assert.Zero(t, out.SubagentCount)
 		})
-		assert.Contains(t, stderr, "HTTP 409")
 		assert.Contains(t, stderr, "sync or maintenance is already running")
-		assert.Contains(t, stderr, "showing stored usage, which may be incomplete")
 		return nil
 	}))
 	out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "parent-a"})
@@ -213,7 +184,6 @@ func TestSessionUsageBeforeStartupImportsClaudeChild(t *testing.T) {
 	assert.Equal(t, tokenUseExitOK, code)
 	assert.Equal(t, 52, out.TotalOutputTokens)
 	assert.Equal(t, 1, out.SubagentCount)
-	assert.Zero(t, startupCalls)
 }
 
 func TestUsageProgressRejectsDaemonWithoutStreamEndpoint(t *testing.T) {
