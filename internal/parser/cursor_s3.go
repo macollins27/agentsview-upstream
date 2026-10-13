@@ -48,15 +48,16 @@ func cursorS3SubagentTranscriptPaths(ctx context.Context, sessionPath string) ([
 
 // CursorS3SourceRoot returns the source root containing a Cursor transcript.
 func CursorS3SourceRoot(sessionPath string) string {
-	projectRoot, _, ok := strings.CutLast(sessionPath, "/agent-transcripts/")
-	if !ok {
-		return ""
+	parts := strings.Split(sessionPath, "/")
+	// A marker-named parent can also make its nested transcript look flat.
+	for i := 1; i < len(parts); i++ {
+		if parts[i] == "agent-transcripts" {
+			if _, ok := parseCursorTranscriptRelParts(parts[i-1:]); ok {
+				return strings.Join(parts[:i-1], "/")
+			}
+		}
 	}
-	sourceRoot, _, ok := strings.CutLast(projectRoot, "/")
-	if !ok {
-		return ""
-	}
-	return sourceRoot
+	return ""
 }
 
 // DiscoverCursorS3SubagentPaths indexes canonical children by their subagent directory URI.
