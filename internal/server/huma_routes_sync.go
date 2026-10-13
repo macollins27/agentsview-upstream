@@ -1076,6 +1076,9 @@ func (s *Server) humaSyncSession(
 		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
+		if errors.Is(err, syncpkg.ErrSyncInProgress) {
+			return nil, apiError(http.StatusConflict, "sync or maintenance is already running; retry the session refresh after it finishes")
+		}
 		if errors.Is(err, db.ErrSessionExcluded) ||
 			errors.Is(err, db.ErrSessionTrashed) {
 			return nil, apiError(http.StatusConflict, err.Error())

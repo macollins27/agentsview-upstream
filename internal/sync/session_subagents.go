@@ -19,6 +19,9 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 	sessionID string,
 ) error {
 	parentErr := e.SyncSingleSessionContext(ctx, sessionID)
+	if errors.Is(parentErr, ErrSyncInProgress) {
+		return parentErr
+	}
 
 	// The archive session ID carries its agent prefix (host prefixes are
 	// stripped first), so the parent agent resolves without a row lookup and
@@ -41,7 +44,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 		subagentErr = e.SyncS3SubagentTranscriptsContext(
 			ctx, sessionID, parentAgent, paths)
 	} else {
-		subagentErr = e.SyncPathsContext(ctx, paths)
+		subagentErr = e.syncPathsContext(ctx, paths, false, false)
 	}
 	return errors.Join(parentErr, subagentErr)
 }

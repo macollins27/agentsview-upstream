@@ -1938,16 +1938,16 @@ func (e *Engine) parsePolicyContext(ctx context.Context) context.Context {
 
 // file watcher threads the serve shutdown context through here.
 func (e *Engine) SyncPathsContext(ctx context.Context, paths []string) error {
-	return e.syncPathsContext(ctx, paths, false)
+	return e.syncPathsContext(ctx, paths, false, true)
 }
 
 // ReparsePathsContext fully parses only the selected sources, retaining the
 // normal publication rules and bounded-memory staging for large Codex files.
 func (e *Engine) ReparsePathsContext(ctx context.Context, paths []string) error {
-	return e.syncPathsContext(ctx, paths, true)
+	return e.syncPathsContext(ctx, paths, true, true)
 }
 
-func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force bool) error {
+func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force, wait bool) error {
 	if e.sourceSyncErr != nil {
 		return e.sourceSyncErr
 	}
@@ -1956,7 +1956,11 @@ func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force boo
 	}
 	ctx = e.parsePolicyContext(ctx)
 	stats, tombstoned, err := func() (SyncStats, int, error) {
-		e.syncMu.Lock()
+		if wait {
+			e.syncMu.Lock()
+		} else if !e.syncMu.TryLock() {
+			return SyncStats{}, 0, ErrSyncInProgress
+		}
 		defer e.syncMu.Unlock()
 		defer e.clearCurrentProgress()
 		previous := e.forceFullParse
@@ -20725,7 +20729,9 @@ func (e *Engine) SyncSingleSessionContext(
 		)
 	}
 	ctx = e.parsePolicyContext(ctx)
-	e.syncMu.Lock()
+	if !e.syncMu.TryLock() {
+		return ErrSyncInProgress
+	}
 	preserved := false
 	sessionsChanged := false
 	// Defers run LIFO: unlock runs first (releasing syncMu), then

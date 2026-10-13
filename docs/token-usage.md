@@ -1069,6 +1069,7 @@ the daemon serves requests.
 `session usage` and `token-use` refresh the named session and its subagents.
 These commands skip full startup ingestion. When a stale archive refuses the
 refresh, they show stored usage with a warning to run `agentsview resync`.
+A busy sync or maintenance pass also returns stored usage with a warning.
 Unknown IDs return "session not found" and exit 2 until daemon ingestion imports them. `--own-only`
 excludes subagents. HTTP/daemon queries with `--own-only` read stored usage
 without refreshing; direct queries without a daemon refresh the named

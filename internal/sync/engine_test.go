@@ -10097,6 +10097,16 @@ func TestEngine_TryRunExclusiveRejectsBusySyncWithoutRunningWork(t *testing.T) {
 
 		require.ErrorIs(t, err, ErrSyncInProgress)
 		assert.False(t, workRan)
+		for _, refresh := range []func() error{
+			func() error { return engine.SyncSingleSessionContext(t.Context(), "parent") },
+			func() error { return engine.SyncSessionWithSubagentsContext(t.Context(), "parent") },
+			func() error { return engine.syncPathsContext(t.Context(), nil, false, false) },
+			func() error {
+				return engine.SyncS3SubagentTranscriptsContext(t.Context(), "parent", parser.AgentClaude, nil)
+			},
+		} {
+			assert.ErrorIs(t, refresh(), ErrSyncInProgress)
+		}
 		release <- struct{}{}
 		require.NoError(t, <-done)
 	})

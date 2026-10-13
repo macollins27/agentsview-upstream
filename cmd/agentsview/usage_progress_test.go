@@ -191,6 +191,21 @@ func TestSessionUsageBeforeStartupImportsClaudeChild(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer cleanup()
+	require.NoError(t, engine.RunExclusive(func() error {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		stderr := captureStderr(t, func() {
+			out, code, err := backend.SessionUsage(ctx, sessionUsageQuery{SessionID: "parent-a"})
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, tokenUseExitOK, code)
+			assert.Equal(t, 10, out.TotalOutputTokens)
+			assert.Zero(t, out.SubagentCount)
+		})
+		assert.Contains(t, stderr, "HTTP 409")
+		assert.Contains(t, stderr, "sync or maintenance is already running")
+		return nil
+	}))
 	out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "parent-a"})
 	require.NoError(t, err)
 	require.NotNil(t, out)
