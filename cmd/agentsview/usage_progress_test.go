@@ -21,11 +21,12 @@ import (
 	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/service"
 	agentsync "go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
-func TestUsageCommandsWaitForStartedDaemonExceptDaily(t *testing.T) {
+func TestUsageCommandsSkipStartupExceptStatusline(t *testing.T) {
 	for _, command := range []string{"daily", "statusline", "session usage", "token-use"} {
 		t.Run(command, func(t *testing.T) {
 			newAgentDataDir(t)
@@ -73,8 +74,8 @@ func TestUsageCommandsWaitForStartedDaemonExceptDaily(t *testing.T) {
 			})
 			assert.True(t, started, "exercise daemon startup rather than an existing daemon")
 			if reqs != nil {
-				assert.Equal(t, "/api/v1/sync", reqs.RequestPath[0])
-				assert.Equal(t, 1, strings.Count(strings.Join(reqs.RequestPath, "\n"), "/api/v1/sync"))
+				assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
+				assert.True(t, reqs.SyncInput.Subagents)
 			}
 		})
 	}
@@ -122,13 +123,14 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 			require.NoError(t, err)
 			defer closeFresh()
 			if sessionQuery {
-				out, _, err := fresh.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session0", OwnOnly: true})
-				require.NoError(t, err)
-				require.NotNil(t, out, "lookup must happen after the missing session is imported")
-				assert.Equal(t, 1, startupCalls)
-				_, _, err = fresh.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session0", OwnOnly: true})
-				require.NoError(t, err)
-				assert.Equal(t, 1, startupCalls, "archived usage must skip startup ingestion")
+				for range 2 {
+					out, code, err := fresh.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session0", OwnOnly: true})
+					require.NoError(t, err)
+					assert.Nil(t, out)
+					assert.Equal(t, tokenUseExitNotFound, code)
+				}
+				assert.Zero(t, startupCalls)
+				assert.False(t, engine.StartupAttemptFinished())
 			} else {
 				_, err := fresh.DailyUsage(t.Context(), dailyUsageQuery{})
 				require.NoError(t, err)
@@ -145,25 +147,29 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 	}
 }
 
-func TestSessionUsageStartedDaemonImportsCodexChild(t *testing.T) {
+func TestSessionUsageAfterDeferredStartupImportsClaudeChild(t *testing.T) {
 	cfg := testConfigWithClaudeFixture(t)
-	codexDir := t.TempDir()
-	cfg.AgentDirs[parser.AgentCodex] = []string{codexDir}
+	claudeDir := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj0")
 	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-	seedUsageSession(t, database, "codex:parent-a", "project", "codex", 10)
 	const timestamp = "2026-01-01T00:00:00Z"
-	child := testjsonl.JoinJSONL(
-		testjsonl.CodexSubagentSessionMetaJSON("child-a", "parent-a", "/project", "codex_cli_rs", timestamp),
-		testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
-		testjsonl.CodexMsgJSON("user", "child task", timestamp),
-		testjsonl.CodexMsgJSON("assistant", "child result", timestamp),
-		testjsonl.CodexTokenCountJSON(timestamp, 100, 42, 0),
-	)
-	require.NoError(t, os.WriteFile(filepath.Join(codexDir, "rollout-child-a.jsonl"), []byte(child), 0o600))
+	parentPath := filepath.Join(claudeDir, "parent-a.jsonl")
+	parent := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithSessionID(timestamp, "parent task", "parent-a").
+		AddClaudeAssistantUsage(timestamp, "parent result", testjsonl.ClaudeAssistantUsage{OutputTokens: 10}).String()
+	require.NoError(t, os.WriteFile(parentPath, []byte(parent), 0o600))
+	childDir := filepath.Join(claudeDir, "parent-a", "subagents")
+	require.NoError(t, os.MkdirAll(childDir, 0o700))
+	child := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithSessionID(timestamp, "child task", "parent-a").
+		AddClaudeAssistantUsage(timestamp, "child result", testjsonl.ClaudeAssistantUsage{OutputTokens: 42}).String()
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "agent-child-a.jsonl"), []byte(child), 0o600))
 	engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{
 		AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true,
 	})
 	t.Cleanup(engine.Close)
+	_, err := service.NewDirectBackend(database, engine).Sync(t.Context(), service.SyncInput{Path: parentPath})
+	require.NoError(t, err)
+	engine.RecordStartupReconciled(agentsync.SyncStats{Deferred: 1}, nil)
 	ts := httptest.NewUnstartedServer(nil)
 	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
 	srv := server.New(cfg, database, engine)
@@ -181,17 +187,17 @@ func TestSessionUsageStartedDaemonImportsCodexChild(t *testing.T) {
 		return daemonRuntimeFromTestURL(t, ts.URL), nil
 	})
 	backend, cleanup, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, archiveQueryPolicy{
-		AutoStart: true, SkipInitialSync: true, WaitForStartedDaemon: true,
+		AutoStart: true, SkipInitialSync: true,
 	})
 	require.NoError(t, err)
 	defer cleanup()
-	out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:parent-a"})
+	out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "parent-a"})
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Equal(t, tokenUseExitOK, code)
 	assert.Equal(t, 52, out.TotalOutputTokens)
 	assert.Equal(t, 1, out.SubagentCount)
-	assert.Equal(t, 1, startupCalls)
+	assert.Zero(t, startupCalls)
 }
 
 func TestUsageProgressRejectsDaemonWithoutStreamEndpoint(t *testing.T) {

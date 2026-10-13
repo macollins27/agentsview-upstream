@@ -19,6 +19,11 @@ import (
 // regardless of transport (the REST handler maps it back to HTTP 501).
 var ErrSearchUnavailable = errors.New("search not available")
 
+// ErrStartupPending reports that the daemon's first startup attempt is still running.
+var ErrStartupPending = errors.New("startup ingestion is still running")
+
+const StartupPendingHeader = "X-Agentsview-Startup-Pending"
+
 // RecallQueryCapability is implemented by services whose backing store can
 // query Recall entries. Callers should treat services without this capability
 // as unsupported so retrieval surfaces are not advertised optimistically.

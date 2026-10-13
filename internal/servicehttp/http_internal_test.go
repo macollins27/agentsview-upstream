@@ -30,12 +30,32 @@ func TestSyncStaleArchiveRequiresResync(t *testing.T) {
 		assert.Equal(t, "/api/v1/sessions/sync", r.URL.Path)
 		w.Header().Set("X-Agentsview-Resync-Required", "true")
 		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"detail":"archive data version changed"}`))
+		_, _ = w.Write([]byte(`{"detail":"archive data version changed; run agentsview resync"}`))
 	}))
 	t.Cleanup(srv.Close)
 	_, err := NewHTTPBackend(srv.URL, "", false, "").Sync(t.Context(), service.SyncInput{ID: "session-a"})
 	require.ErrorContains(t, err, "archive data version changed")
 	assert.ErrorContains(t, err, "agentsview resync")
+}
+
+func TestSyncStartupPending(t *testing.T) {
+	for _, marker := range []string{"true", "false", ""} {
+		t.Run(marker, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set(service.StartupPendingHeader, marker)
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"detail":"sync blocked"}`))
+			}))
+			t.Cleanup(srv.Close)
+			_, err := NewHTTPBackend(srv.URL, "", false, "").Sync(t.Context(), service.SyncInput{ID: "session-a"})
+			if marker == "true" {
+				assert.ErrorIs(t, err, service.ErrStartupPending)
+			} else {
+				assert.NotErrorIs(t, err, service.ErrStartupPending)
+				assert.ErrorContains(t, err, "sync blocked")
+			}
+		})
+	}
 }
 
 func TestHTTPBackendRecallCapabilityRespectsReadOnlyMode(t *testing.T) {

@@ -1067,8 +1067,11 @@ func (s *Server) humaSyncSession(
 	if err := s.rejectStaleArchiveForSync(); err != nil {
 		return nil, err
 	}
-	if in.Body.Subagents && s.engine != nil && !s.engine.StartupReconciled() {
-		return nil, apiError(http.StatusConflict, "startup ingestion has not completed; showing stored usage until it does")
+	if in.Body.Subagents && s.engine != nil && !s.engine.StartupAttemptFinished() {
+		return nil, huma.ErrorWithHeaders(
+			apiError(http.StatusConflict, service.ErrStartupPending.Error()),
+			http.Header{service.StartupPendingHeader: []string{"true"}},
+		)
 	}
 	detail, err := s.sessionSyncService(ctx).Sync(ctx, in.Body)
 	if err != nil {

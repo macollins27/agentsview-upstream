@@ -15,7 +15,6 @@ import (
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/pricing"
 	"go.kenn.io/agentsview/internal/pricingrefresh"
-	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/servicehttp"
 	"go.kenn.io/agentsview/internal/sync"
@@ -34,7 +33,6 @@ type archiveQueryPolicy struct {
 	NoSync               bool
 	AutoStart            bool
 	SkipInitialSync      bool
-	WaitForStartedDaemon bool
 	ReadOnlyDaemon       archiveQueryReadOnlyDaemonPolicy
 	DirectReadOnlyAction string
 }
@@ -89,18 +87,12 @@ func resolveArchiveQueryBackendWithConfig(
 			switch {
 			case !tr.ReadOnly,
 				policy.ReadOnlyDaemon == archiveQueryUseReadOnlyDaemon:
-				waitForStartup := !policy.SkipInitialSync || policy.WaitForStartedDaemon && tr.StartedDaemon
-				waitForStartup = policy.AutoStart && waitForStartup && !policy.NoSync && !tr.ReadOnly
-				if waitForStartup {
+				if policy.AutoStart && !policy.SkipInitialSync && !policy.NoSync && !tr.ReadOnly {
 					if err := waitForArchiveStartup(ctx, tr, cfg.AuthToken); err != nil {
-						if !policy.WaitForStartedDaemon || !errors.Is(err, errDaemonResyncRequired) {
-							return nil, nil, err
-						}
-						fmt.Fprintf(os.Stderr, "warning: %v; run agentsview resync\n", err)
+						return nil, nil, err
 					}
 				}
-				return daemonArchiveQueryBackend{tr: tr, authToken: cfg.AuthToken, startupWaited: waitForStartup},
-					func() {}, nil
+				return daemonArchiveQueryBackend{tr: tr, authToken: cfg.AuthToken}, func() {}, nil
 			case policy.ReadOnlyDaemon == archiveQueryRejectReadOnlyDaemon:
 				return nil, nil, readOnlySessionUsageDaemonError(tr.URL)
 			case policy.ReadOnlyDaemon == archiveQuerySkipReadOnlyDaemon:
@@ -157,8 +149,7 @@ func resolveArchiveQueryTransport(
 	var tr transport
 	var err error
 	if policy.AutoStart && !policy.NoSync {
-		// Daily reports can read committed data while sync runs after
-		// readiness. Session-specific commands still need startup ingestion.
+		// Usage queries can read committed data while daemon-owned sync runs.
 		cfg.SkipInitialSync = policy.SkipInitialSync
 		tr, err = ensureTransportContext(ctx, cfg, transportIntentArchiveWrite, 0)
 	} else {
@@ -166,13 +157,6 @@ func resolveArchiveQueryTransport(
 			cfg.NoSync = true
 		}
 		tr, err = ensureTransportContext(ctx, cfg, transportIntentRead, 0)
-	}
-	if policy.WaitForStartedDaemon && ctx.Err() == nil && (err != nil || tr.DirectIncompatible) {
-		rt, _ := FindIncompatibleDaemonRuntime(cfg.DataDir, cfg.AuthToken)
-		if rt != nil && rt.Data == db.CurrentDataVersion() &&
-			rt.API >= server.SubagentUsageAPIVersion && rt.API < server.TargetedSessionSyncAPIVersion {
-			return transportFromRuntime(rt), nil
-		}
 	}
 	return tr, err
 }
@@ -222,9 +206,8 @@ func openArchiveQueryDB(
 }
 
 type daemonArchiveQueryBackend struct {
-	tr            transport
-	authToken     string
-	startupWaited bool
+	tr        transport
+	authToken string
 }
 
 func (b daemonArchiveQueryBackend) ActivityReport(
@@ -252,17 +235,6 @@ func (b daemonArchiveQueryBackend) SessionUsage(
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
 	out, code, err := httpSessionUsageData(ctx, b.tr, b.authToken, query)
-	if errors.Is(err, errSessionNotFound) && !query.NoSync && !b.tr.ReadOnly && !b.startupWaited {
-		if waitErr := waitForArchiveStartup(ctx, b.tr, b.authToken); waitErr != nil {
-			if !errors.Is(waitErr, errDaemonResyncRequired) {
-				return nil, tokenUseExitErr, waitErr
-			}
-			fmt.Fprintf(os.Stderr, "warning: %v; run agentsview resync\n", waitErr)
-		} else {
-			query.NoSync = true
-			out, code, err = httpSessionUsageData(ctx, b.tr, b.authToken, query)
-		}
-	}
 	if errors.Is(err, errSessionNotFound) {
 		return sessionUsageNotFound(query.SessionID)
 	}
