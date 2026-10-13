@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"go.kenn.io/agentsview/internal/parser"
 )
 
-var subagentTranscriptPaths = parser.ClaudeSubagentTranscriptPaths
+var subagentTranscriptPaths = parser.SubagentTranscriptPaths
 
 // ErrSubagentRefreshIncomplete marks lock contention after the parent refresh.
 var ErrSubagentRefreshIncomplete = errors.New(
@@ -22,6 +23,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 	attemptedPaths := make(map[string]bool)
 	discoveredRoots := make(map[string]bool)
 	queue := []string{sessionID}
+	sourceParents := make(map[string]string)
 	for len(queue) > 0 {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(refreshErr, err)
@@ -40,12 +42,38 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 			continue
 		}
 		path := e.FindSourceFile(ctx, id)
+		s3ParentID := ""
+		if path == "" && session == nil {
+			parentID := sourceParents[id]
+			parentPath := e.db.GetSessionFilePath(ctx, parentID)
+			host, rawID := parser.StripHostPrefix(id)
+			parentHost, _ := parser.StripHostPrefix(parentID)
+			if isS3SourcePath(parentPath) && host == parentHost && strings.HasPrefix(rawID, "codex:") {
+				configuredRoot := ""
+				for _, root := range e.sources().agentDirs[parser.AgentCodex] {
+					if _, ok := s3RelFromRoot(root, parentPath); ok {
+						configuredRoot = root
+						break
+					}
+				}
+				for _, uri := range findCodexS3ParentSessionURIs(configuredRoot, parentPath, strings.TrimPrefix(rawID, "codex:")) {
+					if "codex:"+parser.CodexSessionUUIDFromFilename(uri[strings.LastIndex(uri, "/")+1:]) == rawID {
+						path, s3ParentID = uri, parentID
+						break
+					}
+				}
+			}
+		}
 		// Retained intermediates still connect descendants while their source is absent.
 		if !attemptedPaths[path] && (path != "" || session == nil || id == sessionID) {
 			if path != "" {
 				attemptedPaths[path] = true
 			}
-			err = e.SyncSingleSessionForUsageContext(ctx, id)
+			if s3ParentID != "" {
+				err = e.SyncS3SubagentTranscriptsContext(ctx, s3ParentID, parser.AgentCodex, []string{path})
+			} else {
+				err = e.SyncSingleSessionForUsageContext(ctx, id)
+			}
 			refreshErr = errors.Join(refreshErr, err)
 			if errors.Is(err, ErrSyncInProgress) {
 				if id == sessionID {
@@ -61,10 +89,15 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		if path == "" {
 			path = e.db.GetSessionFilePath(ctx, id)
 		}
-		if root := parser.ClaudeSubagentTranscriptRoot(path); root != "" && !discoveredRoots[root] {
+		if root := parser.SubagentTranscriptRoot(agent, path); root != "" && !discoveredRoots[root] {
 			discoveredRoots[root] = true
 			var paths []string
-			for _, childPath := range subagentTranscriptPaths(path) {
+			discovered, err := subagentTranscriptPaths(ctx, agent, path)
+			refreshErr = errors.Join(refreshErr, err)
+			for _, childPath := range discovered {
+				if childRoot := parser.SubagentTranscriptRoot(agent, childPath); childRoot != "" && samePathOrDescendant(childRoot, root) {
+					discoveredRoots[childRoot] = true
+				}
 				if !attemptedPaths[childPath] {
 					attemptedPaths[childPath] = true
 					paths = append(paths, childPath)
@@ -93,7 +126,12 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		if err != nil {
 			return errors.Join(refreshErr, err)
 		}
-		queue = append(queue, spawned...)
+		for _, childID := range spawned {
+			if sourceParents[childID] == "" {
+				sourceParents[childID] = id
+			}
+			queue = append(queue, childID)
+		}
 	}
 	return refreshErr
 }

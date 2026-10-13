@@ -10211,9 +10211,9 @@ func TestSubagentRefreshClaudeLayoutDiscovery(t *testing.T) {
 			oldPaths := subagentTranscriptPaths
 			t.Cleanup(func() { subagentTranscriptPaths = oldPaths })
 			enumerations := 0
-			subagentTranscriptPaths = func(path string) []string {
+			subagentTranscriptPaths = func(ctx context.Context, agent parser.AgentType, path string) ([]string, error) {
 				enumerations++
-				return oldPaths(path)
+				return oldPaths(ctx, agent, path)
 			}
 			require.False(t, engine.StartupReconciled())
 			require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))

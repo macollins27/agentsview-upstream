@@ -534,3 +534,131 @@ func TestSessionUsageBeforeStartupImportsRooChild(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, unrelated)
 }
+
+func TestSessionUsageBeforeStartupImportsNativeLayoutChildren(t *testing.T) {
+	for _, tt := range []struct {
+		name                         string
+		agent                        parser.AgentType
+		cursorExt                    string
+		nested, duplicate, canonical bool
+	}{
+		{name: "posit", agent: parser.AgentPositAssistant},
+		{name: "pi", agent: parser.AgentPi},
+		{name: "omp", agent: parser.AgentOMP},
+		{name: "cursor nested jsonl", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true},
+		{name: "cursor flat txt", agent: parser.AgentCursor, cursorExt: ".txt"},
+		{name: "cursor prefers jsonl", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true, duplicate: true},
+		{name: "cursor prefers own transcript", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true, canonical: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{tt.agent: {root}}, InstallationID: "local"}
+			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
+			t.Cleanup(engine.Close)
+			write := func(path, content string) {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+				require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+			}
+			copyPosit := func(relative string) string {
+				path := filepath.Join(root, "project", relative, "conversation.json")
+				for _, name := range []string{"conversation.json", "lm-messages.jsonl"} {
+					content, err := os.ReadFile(filepath.Join("..", "..", "internal", "parser", "testdata", "posit-assistant", "workspaces", "a1b2c3d4", relative, name))
+					require.NoError(t, err)
+					write(filepath.Join(filepath.Dir(path), name), string(content))
+				}
+				return path
+			}
+			piContent := func(id, parent string) string {
+				return fmt.Sprintf(`{"type":"session","version":3,"id":%q,"timestamp":"2026-01-01T00:00:00Z","cwd":"/work/project","parentSession":%q}
+{"type":"message","id":%q,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"task"}}
+{"type":"message","id":%q,"timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":"answer","model":"claude-opus-4-5","usage":{"input":10,"output":42}}}
+`, id, parent, id+"-m1", id+"-m2")
+			}
+			const cursorJSONL = `{"role":"user","message":{"content":"<user_query>task</user_query>"}}
+{"role":"assistant","message":{"content":"answer"}}
+`
+			const cursorTXT = "user:\n<user_query>task</user_query>\n\nassistant:\nanswer\n"
+			parentPath := filepath.Join(root, "project", "2026-01-01T00-00-00-000Z_parent.jsonl")
+			switch tt.agent {
+			case parser.AgentPositAssistant:
+				parentPath = copyPosit("11111111")
+			case parser.AgentCursor:
+				parentPath = filepath.Join(root, "project", "agent-transcripts", "parent"+tt.cursorExt)
+				if tt.nested {
+					parentPath = filepath.Join(root, "project", "agent-transcripts", "parent", "parent"+tt.cursorExt)
+				}
+				if tt.cursorExt == ".txt" {
+					write(parentPath, cursorTXT)
+				} else {
+					write(parentPath, cursorJSONL)
+				}
+			default:
+				write(parentPath, piContent("parent", ""))
+			}
+			require.NoError(t, engine.SyncPathsContext(t.Context(), []string{parentPath}))
+			ids, err := database.ListSessionIDsByFilePath(t.Context(), parentPath, string(tt.agent))
+			require.NoError(t, err)
+			require.Len(t, ids, 1)
+			parentID := ids[0]
+			spawned, err := database.SubagentChildSessionIDs(t.Context(), []string{parentID})
+			require.NoError(t, err)
+			require.Empty(t, spawned)
+			childPath := filepath.Join(strings.TrimSuffix(parentPath, ".jsonl"), "run-a", "run-0", "session.jsonl")
+			switch tt.agent {
+			case parser.AgentPositAssistant:
+				childPath = copyPosit(filepath.Join("11111111", "subagents", "22222222"))
+			case parser.AgentCursor:
+				childPath = filepath.Join(root, "project", "agent-transcripts", "parent", "subagents", "child"+tt.cursorExt)
+				if tt.cursorExt == ".txt" {
+					write(childPath, cursorTXT)
+				} else {
+					write(childPath, cursorJSONL)
+				}
+				if tt.duplicate {
+					write(strings.TrimSuffix(childPath, ".jsonl")+".txt", cursorTXT)
+				}
+				if tt.canonical {
+					childPath = filepath.Join(root, "project", "agent-transcripts", "child.txt")
+					write(childPath, cursorTXT)
+				}
+			default:
+				if tt.agent == parser.AgentOMP {
+					childPath = filepath.Join(strings.TrimSuffix(parentPath, ".jsonl"), "Scout.jsonl")
+				}
+				write(childPath, piContent("child", ""))
+			}
+			absent, err := database.ListSessionIDsByFilePath(t.Context(), childPath, string(tt.agent))
+			require.NoError(t, err)
+			require.Empty(t, absent)
+			backend := usageHandlerBackend(t, cfg, database, engine)
+			stderr := captureStderr(t, func() {
+				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: parentID})
+				require.NoError(t, err)
+				require.NotNil(t, out)
+				wantCode := tokenUseExitOK
+				if tt.agent == parser.AgentCursor {
+					wantCode = tokenUseExitNoTokenData
+				}
+				assert.Equal(t, wantCode, code)
+				wantChildren := 1
+				if tt.canonical {
+					wantChildren = 0
+				}
+				assert.Equal(t, wantChildren, out.SubagentCount)
+				if tt.agent == parser.AgentPi || tt.agent == parser.AgentOMP {
+					assert.Equal(t, 84, out.TotalOutputTokens)
+				}
+			})
+			assert.Empty(t, stderr)
+			assert.False(t, engine.StartupReconciled())
+			ids, err = database.ListSessionIDsByFilePath(t.Context(), childPath, string(tt.agent))
+			require.NoError(t, err)
+			require.Len(t, ids, 1)
+			child, err := database.GetSession(t.Context(), ids[0])
+			require.NoError(t, err)
+			require.NotNil(t, child)
+			assert.Equal(t, string(tt.agent), child.Agent)
+		})
+	}
+}

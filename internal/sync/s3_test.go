@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -935,10 +936,10 @@ func TestSyncArchivedS3IcodemateParentPreservesChildAgentAndIDNamespace(
 		statClaudeS3Session = oldStat
 	})
 	enumerations := 0
-	subagentTranscriptPaths = func(got string) []string {
+	subagentTranscriptPaths = func(_ context.Context, _ parser.AgentType, got string) ([]string, error) {
 		enumerations++
 		require.Equal(t, parentPath, got)
-		return []string{childPath}
+		return []string{childPath}, nil
 	}
 	fetchS3Object = func(got string) (io.ReadCloser, error) {
 		if got == parentPath {
@@ -1270,66 +1271,83 @@ func TestProcessS3CodexRevertPageUsesThreadIndexTitle(t *testing.T) {
 }
 
 func TestSyncSessionWithS3CodexDescendants(t *testing.T) {
-	database := openTestDB(t)
-	const root = "s3://bucket/host-a/raw/codex"
-	const parent = "11111111-1111-4111-8111-111111111111"
-	const child = "22222222-2222-4222-8222-222222222222"
-	const timestamp = "2026-01-01T00:00:00Z"
-	parentID, childID := "host-a~codex:"+parent, "host-a~codex:"+child
-	parentPath := root + "/2026/01/01/rollout-2026-01-01T00-00-00-" + parent + ".jsonl"
-	childPath := root + "/2026/01/01/rollout-2026-01-01T00-00-00-" + child + ".jsonl"
-	content := func(metadata string, output int) string {
-		return testjsonl.JoinJSONL(metadata,
-			testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
-			testjsonl.CodexMsgJSON("user", "task", timestamp),
-			testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
-			testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0))
+	for _, state := range []string{"archived", "new child"} {
+		t.Run(state, func(t *testing.T) {
+			database := openTestDB(t)
+			const root = "s3://bucket/host-a/raw/codex"
+			const parent = "11111111-1111-4111-8111-111111111111"
+			const child = "22222222-2222-4222-8222-222222222222"
+			const timestamp = "2026-01-01T00:00:00Z"
+			parentID, childID := "host-a~codex:"+parent, "host-a~codex:"+child
+			parentPath := root + "/2026/01/01/rollout-2026-01-01T00-00-00-" + parent + ".jsonl"
+			childPath := root + "/2026/01/01/rollout-2026-01-01T00-00-00-" + child + ".jsonl"
+			content := func(metadata string, output int) string {
+				return testjsonl.JoinJSONL(metadata,
+					testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
+					testjsonl.CodexMsgJSON("user", "task", timestamp),
+					testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
+					testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0))
+			}
+			objects := map[string]string{
+				parentPath: content(testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp), 10),
+				childPath:  content(testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp), 42),
+			}
+			if state == "new child" {
+				objects[parentPath] += testjsonl.JoinJSONL(testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn", map[string]any{"message": "child task"}, timestamp), testjsonl.CodexFunctionCallOutputJSON("spawn", `{"agent_id":"`+child+`"}`, timestamp))
+			}
+			oldFind := findCodexS3ParentSessionURIs
+			t.Cleanup(func() { findCodexS3ParentSessionURIs = oldFind })
+			findCodexS3ParentSessionURIs = func(configuredRoot, parentURI, childUUID string) []string {
+				require.Equal(t, root, configuredRoot)
+				require.Equal(t, parentPath, parentURI)
+				require.Equal(t, child, childUUID)
+				return []string{childPath}
+			}
+			oldFetch, oldStat, oldCodexStat := fetchS3Object, statS3Object, statCodexS3Session
+			t.Cleanup(func() { fetchS3Object, statS3Object, statCodexS3Session = oldFetch, oldStat, oldCodexStat })
+			fetches := map[string]int{}
+			fetchS3Object = func(uri string) (io.ReadCloser, error) {
+				text, ok := objects[uri]
+				if !ok {
+					return nil, missingS3ObjectError()
+				}
+				fetches[uri]++
+				return io.NopCloser(strings.NewReader(text)), nil
+			}
+			stat := func(uri string) (parser.S3Object, error) {
+				text, ok := objects[uri]
+				if !ok {
+					return parser.S3Object{}, missingS3ObjectError()
+				}
+				return parser.S3Object{URI: uri, Size: int64(len(text)), LastModified: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}, nil
+			}
+			statS3Object, statCodexS3Session = stat, stat
+			for _, row := range []db.Session{
+				{ID: parentID, Agent: "codex", Machine: "host-a", Project: "project", FilePath: &parentPath},
+				{ID: childID, Agent: "codex", Machine: "host-a", Project: "project", FilePath: &childPath, ParentSessionID: &parentID},
+			} {
+				if row.ID != childID || state == "archived" {
+					require.NoError(t, database.UpsertSession(t.Context(), row))
+				}
+			}
+			engine := NewEngine(t.Context(), database, EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentCodex: {root}}, Machine: "receiver", Ephemeral: true, DeferStartupMaintenance: true})
+			t.Cleanup(engine.Close)
+			require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))
+			usage, err := database.GetSessionUsage(t.Context(), childID, true)
+			require.NoError(t, err)
+			require.NotNil(t, usage)
+			assert.Equal(t, 42, usage.TotalOutputTokens)
+			stored, err := database.GetSession(t.Context(), childID)
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			assert.Equal(t, "host-a", stored.Machine)
+			require.NotNil(t, stored.ParentSessionID)
+			assert.Equal(t, parentID, *stored.ParentSessionID)
+			assert.Equal(t, 1, fetches[parentPath])
+			assert.Equal(t, 1, fetches[childPath])
+			duplicate, err := database.GetSession(t.Context(), "codex:"+child)
+			require.NoError(t, err)
+			assert.Nil(t, duplicate)
+		})
 	}
-	objects := map[string]string{
-		parentPath: content(testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp), 10),
-		childPath:  content(testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp), 42),
-	}
-	oldFetch, oldStat, oldCodexStat := fetchS3Object, statS3Object, statCodexS3Session
-	t.Cleanup(func() { fetchS3Object, statS3Object, statCodexS3Session = oldFetch, oldStat, oldCodexStat })
-	fetches := map[string]int{}
-	fetchS3Object = func(uri string) (io.ReadCloser, error) {
-		text, ok := objects[uri]
-		if !ok {
-			return nil, missingS3ObjectError()
-		}
-		fetches[uri]++
-		return io.NopCloser(strings.NewReader(text)), nil
-	}
-	stat := func(uri string) (parser.S3Object, error) {
-		text, ok := objects[uri]
-		if !ok {
-			return parser.S3Object{}, missingS3ObjectError()
-		}
-		return parser.S3Object{URI: uri, Size: int64(len(text)), LastModified: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}, nil
-	}
-	statS3Object, statCodexS3Session = stat, stat
-	for _, row := range []db.Session{
-		{ID: parentID, Agent: "codex", Machine: "host-a", Project: "project", FilePath: &parentPath},
-		{ID: childID, Agent: "codex", Machine: "host-a", Project: "project", FilePath: &childPath, ParentSessionID: &parentID},
-	} {
-		require.NoError(t, database.UpsertSession(t.Context(), row))
-	}
-	engine := NewEngine(t.Context(), database, EngineConfig{Machine: "receiver", Ephemeral: true, DeferStartupMaintenance: true})
-	t.Cleanup(engine.Close)
-	require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))
-	usage, err := database.GetSessionUsage(t.Context(), childID, true)
-	require.NoError(t, err)
-	require.NotNil(t, usage)
-	assert.Equal(t, 42, usage.TotalOutputTokens)
-	stored, err := database.GetSession(t.Context(), childID)
-	require.NoError(t, err)
-	require.NotNil(t, stored)
-	assert.Equal(t, "host-a", stored.Machine)
-	require.NotNil(t, stored.ParentSessionID)
-	assert.Equal(t, parentID, *stored.ParentSessionID)
-	assert.Equal(t, 1, fetches[parentPath])
-	assert.Equal(t, 1, fetches[childPath])
-	duplicate, err := database.GetSession(t.Context(), "codex:"+child)
-	require.NoError(t, err)
-	assert.Nil(t, duplicate)
 }
