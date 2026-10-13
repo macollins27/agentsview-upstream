@@ -642,8 +642,9 @@ workflow also:
   second index to keep fresh.
 - **Reads committed archive data** — daily reports can run while the daemon
   imports new source changes. Run `agentsview sync` first when those changes
-  must be included. See [Source Freshness](#source-freshness) for session usage
-  and statusline behavior.
+  must be included. See the
+  [source freshness guide](https://agentsview.io/docs/token-usage/#source-freshness)
+  for session usage and statusline behavior.
 
 ## `agentsview usage daily`
 
