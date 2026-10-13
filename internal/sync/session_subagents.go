@@ -31,12 +31,12 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 			continue
 		}
 		seenIDs[id] = true
-		if id != sessionID && (e.db.IsSessionExcluded(ctx, id) || e.db.IsSessionTrashed(ctx, id)) {
-			continue
-		}
 		session, err := e.db.GetSession(ctx, id)
 		if err != nil {
 			return errors.Join(refreshErr, err)
+		}
+		if session == nil && id != sessionID && (e.db.IsSessionExcluded(ctx, id) || e.db.IsSessionTrashed(ctx, id)) {
+			continue
 		}
 		path := e.FindSourceFile(ctx, id)
 		// Retained intermediates still connect descendants while their source is absent.

@@ -461,7 +461,6 @@ func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
 					} else {
 						require.NoError(t, database.DeleteSession(t.Context(), id(child)))
 					}
-					require.NoError(t, os.Remove(childPath))
 					wantOutput, wantChildren = 10, 0
 				}
 				write(other, testjsonl.CodexSessionMetaJSON(other, "/work/project", "user", timestamp), 999, "")
