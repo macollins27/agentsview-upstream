@@ -1695,7 +1695,7 @@ func TestSessionUsage_StartupPendingReturnsStoredUsage(t *testing.T) {
 		assert.Equal(t, tokenUseExitOK, code)
 		assert.Equal(t, 42, out.TotalOutputTokens)
 	})
-	assert.Contains(t, stderr, "warning: startup ingestion is still running; showing stored usage")
+	assert.Contains(t, stderr, "warning: startup ingestion is pending; showing stored usage")
 	assert.NotContains(t, stderr, "sync failed")
 	assert.True(t, reqs.SyncInput.Subagents)
 	assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")

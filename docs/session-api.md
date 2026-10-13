@@ -585,7 +585,7 @@ sessions already present there.
 - A stale archive returns HTTP 409 with `X-Agentsview-Resync-Required: true`.
   Run `agentsview resync` before retrying `session sync`.
 - Subagent refresh returns HTTP 409 with `X-Agentsview-Startup-Pending: true`
-  while the first startup attempt runs. Once that attempt ends, including a
+  while startup ingestion is pending. Once the first attempt ends, including a
   failed or deferred attempt, targeted refresh can proceed.
 - If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
   (read-only), sync refuses with a clear error.

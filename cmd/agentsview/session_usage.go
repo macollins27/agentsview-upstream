@@ -215,7 +215,7 @@ func httpSessionUsageData(
 			_, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: true})
 		}
 		if errors.Is(syncErr, service.ErrStartupPending) {
-			fmt.Fprintln(os.Stderr, "warning: startup ingestion is still running; showing stored usage")
+			fmt.Fprintln(os.Stderr, "warning: startup ingestion is pending; showing stored usage")
 		} else if syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
 			fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
 		}

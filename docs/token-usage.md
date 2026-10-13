@@ -643,7 +643,7 @@ workflow also:
 - **Reads committed archive data** — daily reports can run while the daemon
   imports new source changes. Run `agentsview sync` first when those changes
   must be included. Session usage refreshes the named session and its subagents.
-  While the first startup attempt runs, or when the archive is stale, session
+  While startup ingestion is pending, or when the archive is stale, session
   usage returns stored usage with a warning. Unknown IDs return "session not
   found" until ingestion imports them. Statusline waits for startup ingestion.
 

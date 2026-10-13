@@ -19,8 +19,8 @@ import (
 // regardless of transport (the REST handler maps it back to HTTP 501).
 var ErrSearchUnavailable = errors.New("search not available")
 
-// ErrStartupPending reports that the daemon's first startup attempt is still running.
-var ErrStartupPending = errors.New("startup ingestion is still running")
+// ErrStartupPending reports that the daemon's first startup attempt has not finished.
+var ErrStartupPending = errors.New("startup ingestion is pending")
 
 const StartupPendingHeader = "X-Agentsview-Startup-Pending"
 
