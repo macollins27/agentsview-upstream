@@ -11,6 +11,7 @@ import (
 
 var subagentTranscriptPaths = parser.SubagentTranscriptPaths
 var discoverCodexS3SessionURIs = parser.DiscoverCodexS3SessionURIs
+var discoverCursorS3SubagentPaths = parser.DiscoverCursorS3SubagentPaths
 
 // ErrSubagentRefreshIncomplete marks lock contention after the parent refresh.
 var ErrSubagentRefreshIncomplete = errors.New(
@@ -24,6 +25,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 	attemptedPaths := make(map[string]bool)
 	discoveredRoots := make(map[string]bool)
 	codexS3Sources := make(map[string]map[string]string)
+	cursorS3Sources := make(map[string]map[string][]string)
 	queue := []string{sessionID}
 	sourceParents := make(map[string]string)
 	for len(queue) > 0 {
@@ -99,7 +101,19 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		if root := parser.SubagentTranscriptRoot(agent, path); root != "" && !discoveredRoots[root] {
 			discoveredRoots[root] = true
 			var paths []string
-			discovered, err := subagentTranscriptPaths(ctx, agent, path)
+			var discovered []string
+			var err error
+			if agent == parser.AgentCursor && isS3SourcePath(path) {
+				sourceRoot := parser.CursorS3SourceRoot(path)
+				inventory, listed := cursorS3Sources[sourceRoot]
+				if !listed {
+					inventory, err = discoverCursorS3SubagentPaths(ctx, sourceRoot)
+					cursorS3Sources[sourceRoot] = inventory
+				}
+				discovered = inventory[root]
+			} else {
+				discovered, err = subagentTranscriptPaths(ctx, agent, path)
+			}
 			refreshErr = errors.Join(refreshErr, err)
 			for _, childPath := range discovered {
 				if childRoot := parser.SubagentTranscriptRoot(agent, childPath); childRoot != "" && samePathOrDescendant(childRoot, root) {

@@ -1381,14 +1381,17 @@ func TestSyncSessionWithS3CursorChild(t *testing.T) {
 	const parentID = "host-a~cursor:parent"
 	const parentPath = root + "/project/agent-transcripts/parent/parent.jsonl"
 	const childPath = root + "/project/agent-transcripts/parent/subagents/child.jsonl"
+	const siblingPath = root + "/project/agent-transcripts/parent/subagents/sibling.jsonl"
 	content := `{"role":"user","message":{"content":"<user_query>task</user_query>"}}
 {"role":"assistant","message":{"content":"answer"}}
 `
-	oldFetch, oldLookup, oldPaths := fetchS3Object, lookupS3Provider, subagentTranscriptPaths
-	t.Cleanup(func() { fetchS3Object, lookupS3Provider, subagentTranscriptPaths = oldFetch, oldLookup, oldPaths })
+	oldFetch, oldLookup, oldDiscover := fetchS3Object, lookupS3Provider, discoverCursorS3SubagentPaths
+	t.Cleanup(func() {
+		fetchS3Object, lookupS3Provider, discoverCursorS3SubagentPaths = oldFetch, oldLookup, oldDiscover
+	})
 	fetches := make(map[string]int)
 	fetchS3Object = func(uri string) (io.ReadCloser, error) {
-		if uri != parentPath && uri != childPath {
+		if uri != parentPath && uri != childPath && uri != siblingPath {
 			return nil, missingS3ObjectError()
 		}
 		fetches[uri]++
@@ -1404,13 +1407,11 @@ func TestSyncSessionWithS3CursorChild(t *testing.T) {
 		}
 		return provider, ok
 	}
-	subagentTranscriptPaths = func(_ context.Context, agent parser.AgentType, uri string) ([]string, error) {
-		assert.Equal(t, parser.AgentCursor, agent)
-		if uri == parentPath {
-			return []string{childPath}, nil
-		}
-		assert.Equal(t, childPath, uri)
-		return nil, nil
+	listings := 0
+	discoverCursorS3SubagentPaths = func(_ context.Context, sourceRoot string) (map[string][]string, error) {
+		assert.Equal(t, root, sourceRoot)
+		listings++
+		return map[string][]string{root + "/project/agent-transcripts/parent/subagents": {childPath, siblingPath}}, nil
 	}
 	path := parentPath
 	require.NoError(t, database.UpsertSession(t.Context(), db.Session{
@@ -1429,4 +1430,12 @@ func TestSyncSessionWithS3CursorChild(t *testing.T) {
 	assert.Equal(t, parentID, *child.ParentSessionID)
 	assert.Equal(t, 1, fetches[parentPath])
 	assert.Equal(t, 1, fetches[childPath])
+	assert.Equal(t, 1, fetches[siblingPath])
+	assert.Equal(t, 1, listings)
+	sibling, err := database.GetSessionFull(t.Context(), "host-a~cursor:sibling")
+	require.NoError(t, err)
+	require.NotNil(t, sibling)
+	assert.Equal(t, siblingPath, derefString(sibling.FilePath))
+	require.NotNil(t, sibling.ParentSessionID)
+	assert.Equal(t, parentID, *sibling.ParentSessionID)
 }

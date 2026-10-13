@@ -39,26 +39,42 @@ type cursorS3Transcript struct {
 }
 
 func cursorS3SubagentTranscriptPaths(ctx context.Context, sessionPath string) ([]string, error) {
+	byRoot, err := DiscoverCursorS3SubagentPaths(ctx, CursorS3SourceRoot(sessionPath))
+	if err != nil {
+		return nil, err
+	}
+	return byRoot[SubagentTranscriptRoot(AgentCursor, sessionPath)], nil
+}
+
+// CursorS3SourceRoot returns the source root containing a Cursor transcript.
+func CursorS3SourceRoot(sessionPath string) string {
 	projectRoot, _, ok := strings.CutLast(sessionPath, "/agent-transcripts/")
 	if !ok {
-		return nil, nil
+		return ""
 	}
 	sourceRoot, _, ok := strings.CutLast(projectRoot, "/")
 	if !ok {
-		return nil, nil
+		return ""
 	}
+	return sourceRoot
+}
+
+// DiscoverCursorS3SubagentPaths indexes canonical children by their subagent directory URI.
+func DiscoverCursorS3SubagentPaths(ctx context.Context, sourceRoot string) (map[string][]string, error) {
 	byRoot, err := discoverCursorS3ByRoot(ctx, []string{sourceRoot})
 	if err != nil {
 		return nil, err
 	}
-	prefix := SubagentTranscriptRoot(AgentCursor, sessionPath) + "/"
-	var paths []string
+	paths := make(map[string][]string)
 	for _, file := range byRoot[sourceRoot] {
-		if strings.HasPrefix(file.Path, prefix) {
-			paths = append(paths, file.Path)
+		if cursorS3LayoutRank(file.Path) == cursorS3LayoutSubagent {
+			root, _, _ := strings.CutLast(file.Path, "/")
+			paths[root] = append(paths[root], file.Path)
 		}
 	}
-	slices.Sort(paths)
+	for _, children := range paths {
+		slices.Sort(children)
+	}
 	return paths, nil
 }
 

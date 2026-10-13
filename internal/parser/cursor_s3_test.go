@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -412,7 +413,8 @@ func TestCursorS3SubagentTranscriptPaths(t *testing.T) {
 			}
 			assert.Equal(t, project+"parent/subagents", SubagentTranscriptRoot(AgentCursor, parent))
 			assert.Equal(t, project+"parent/subagents", SubagentTranscriptRoot(AgentCursor, project+"parent.jsonl"))
-			assert.Equal(t, project+"child/subagents", SubagentTranscriptRoot(AgentCursor, child))
+			localChild := filepath.FromSlash("project/agent-transcripts/parent/subagents/child.jsonl")
+			assert.Equal(t, root+"/"+filepath.ToSlash(SubagentTranscriptRoot(AgentCursor, localChild)), SubagentTranscriptRoot(AgentCursor, child))
 			paths, err := SubagentTranscriptPaths(t.Context(), AgentCursor, parent)
 			require.NoError(t, err)
 			if canonical {
@@ -422,4 +424,30 @@ func TestCursorS3SubagentTranscriptPaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDiscoverCursorS3SubagentPaths(t *testing.T) {
+	const root = "s3://bucket/host-a/raw/cursor"
+	const project = root + "/project/agent-transcripts/"
+	oldList := listS3Objects
+	t.Cleanup(func() { listS3Objects = oldList })
+	listings := 0
+	listS3Objects = func(got string) ([]S3Object, error) {
+		require.Equal(t, root, got)
+		listings++
+		return []S3Object{
+			{URI: project + "parent/subagents/child.jsonl"},
+			{URI: project + "parent/subagents/sibling.jsonl"},
+			{URI: project + "child/subagents/grandchild.jsonl"},
+			{URI: project + "child/subagents/copied.jsonl"},
+			{URI: project + "copied.txt"},
+		}, nil
+	}
+	paths, err := DiscoverCursorS3SubagentPaths(t.Context(), root)
+	require.NoError(t, err)
+	assert.Equal(t, 1, listings)
+	assert.Equal(t, map[string][]string{
+		project + "parent/subagents": {project + "parent/subagents/child.jsonl", project + "parent/subagents/sibling.jsonl"},
+		project + "child/subagents":  {project + "child/subagents/grandchild.jsonl"},
+	}, paths)
 }
