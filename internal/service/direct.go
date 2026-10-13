@@ -544,6 +544,9 @@ func (b *directBackend) Sync(
 		if in.UsageRefresh {
 			storedPath := b.local.GetSessionFilePath(ctx, in.ID)
 			if storedPath == "" {
+				storedPath = b.engine.FindSourceFile(ctx, in.ID)
+			}
+			if storedPath == "" {
 				return nil, fmt.Errorf(
 					"sync: no file_path recorded for session %q", in.ID,
 				)
@@ -562,6 +565,9 @@ func (b *directBackend) Sync(
 
 	if !in.Subagents && path == "" {
 		storedPath := b.local.GetSessionFilePath(ctx, in.ID)
+		if storedPath == "" && in.UsageRefresh {
+			storedPath = b.engine.FindSourceFile(ctx, in.ID)
+		}
 		if storedPath == "" {
 			return nil, fmt.Errorf(
 				"sync: no file_path recorded for session %q", in.ID,

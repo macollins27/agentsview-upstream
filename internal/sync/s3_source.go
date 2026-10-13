@@ -418,7 +418,7 @@ func (e *Engine) hydrateS3DiscoveredFile(
 	}
 }
 
-// SyncS3SubagentTranscriptsContext ingests the given s3:// Claude-compatible
+// SyncS3SubagentTranscriptsContext ingests the given provider-native s3://
 // subagent transcript objects. The changed-path pipeline
 // (SyncPathsContext) classifies by statting local files, so it cannot
 // route s3:// objects; the on-demand subagent refresh behind `session
@@ -439,7 +439,8 @@ func (e *Engine) SyncS3SubagentTranscriptsContext(
 	if e.refuseWriteInForceParse("SyncS3SubagentTranscripts") {
 		return nil
 	}
-	if !isClaudeFormatAgent(parentAgent) {
+	provider, ok := s3ProviderFor(parentAgent)
+	if !ok {
 		return fmt.Errorf("sync s3 subagent transcripts: unsupported parent agent %q", parentAgent)
 	}
 	if err := e.lockForSessionRefresh(ctx); err != nil {
@@ -461,10 +462,11 @@ func (e *Engine) SyncS3SubagentTranscriptsContext(
 
 	parentMachine, _ := parser.StripHostPrefix(parentSessionID)
 	parentProject := ""
-	if parent, _ := e.db.GetSession(ctx, parentSessionID); parent != nil &&
-		parent.Project != "" &&
-		!parser.NeedsProjectReparse(parent.Project) {
-		parentProject = parent.Project
+	if parent, _ := e.db.GetSession(ctx, parentSessionID); parent != nil {
+		parentMachine = parent.Machine
+		if parent.Project != "" && !parser.NeedsProjectReparse(parent.Project) {
+			parentProject = parent.Project
+		}
 	}
 	var errs error
 	for _, p := range paths {
@@ -477,7 +479,14 @@ func (e *Engine) SyncS3SubagentTranscriptsContext(
 		file := parser.DiscoveredFile{
 			Path: p, Agent: parentAgent, Machine: parentMachine,
 		}
-		childID := s3DiscoveredSessionID(file)
+		childID, err := e.s3StoredSessionID(ctx, file, provider)
+		if err != nil {
+			errs = errors.Join(errs, err)
+			continue
+		}
+		if childID == "" {
+			childID = s3DiscoveredSessionIDWithProvider(file, provider)
+		}
 		if childID == "" {
 			continue
 		}

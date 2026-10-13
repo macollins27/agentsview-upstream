@@ -592,8 +592,8 @@ sessions already present there.
   finish.
 - Usage refresh reports ingestion failures and returns the replacement session
   ID when Vibe metadata changes its identity. Combined usage refreshes archived
-  descendant sources, including separate Codex rollouts, without startup
-  ingestion.
+  descendant sources and Codex children named by spawn records without startup
+  ingestion. Source-missing ancestors retain their available descendants.
 - If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
   (read-only), sync refuses with a clear error.
 - If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI runs the sync in-process only

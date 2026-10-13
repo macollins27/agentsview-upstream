@@ -326,91 +326,138 @@ func TestSessionUsageOwnOnlyRealRefreshFailures(t *testing.T) {
 func TestSessionUsageVibeReplacementID(t *testing.T) {
 	for _, promotion := range []bool{false, true} {
 		for _, ownOnly := range []bool{false, true} {
-			t.Run(fmt.Sprintf("promotion=%t/own_only=%t", promotion, ownOnly), func(t *testing.T) {
-				root := t.TempDir()
-				cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, InstallationID: "local"}
-				database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-				engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
-				t.Cleanup(engine.Close)
-				const dirName = "session_20260616_083518_abc123"
-				const canonical = "vibe:11111111-1111-4111-8111-111111111111"
-				dir := filepath.Join(root, dirName)
-				require.NoError(t, os.MkdirAll(dir, 0o700))
-				messages := filepath.Join(dir, "messages.jsonl")
-				require.NoError(t, os.WriteFile(messages, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o600))
-				meta := filepath.Join(dir, "meta.json")
-				writeMeta := func() {
-					require.NoError(t, os.WriteFile(meta, []byte(`{"session_id":"11111111-1111-4111-8111-111111111111"}`), 0o600))
-				}
-				if !promotion {
-					writeMeta()
-				}
-				require.NoError(t, engine.SyncPathsContext(t.Context(), []string{messages}))
-				requested, expected := canonical, "vibe:"+dirName
-				if promotion {
-					writeMeta()
-					requested, expected = expected, requested
-				} else {
-					require.NoError(t, os.Remove(meta))
-				}
-				backend := usageHandlerBackend(t, cfg, database, engine)
-				stderr := captureStderr(t, func() {
-					out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested, OwnOnly: ownOnly})
+			for _, direct := range []bool{false, true} {
+				t.Run(fmt.Sprintf("promotion=%t/own_only=%t/direct=%t", promotion, ownOnly, direct), func(t *testing.T) {
+					root := t.TempDir()
+					cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, InstallationID: "local"}
+					database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+					engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
+					t.Cleanup(engine.Close)
+					const dirName = "session_20260616_083518_abc123"
+					const canonical = "vibe:11111111-1111-4111-8111-111111111111"
+					dir := filepath.Join(root, dirName)
+					require.NoError(t, os.MkdirAll(dir, 0o700))
+					messages := filepath.Join(dir, "messages.jsonl")
+					require.NoError(t, os.WriteFile(messages, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o600))
+					meta := filepath.Join(dir, "meta.json")
+					writeMeta := func() {
+						require.NoError(t, os.WriteFile(meta, []byte(`{"session_id":"11111111-1111-4111-8111-111111111111"}`), 0o600))
+					}
+					if !promotion {
+						writeMeta()
+					}
+					require.NoError(t, engine.SyncPathsContext(t.Context(), []string{messages}))
+					requested, expected := canonical, "vibe:"+dirName
+					if promotion {
+						writeMeta()
+						requested, expected = expected, requested
+					} else {
+						require.NoError(t, os.Remove(meta))
+					}
+					var backend archiveQueryBackend
+					if direct {
+						backend = localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
+					} else {
+						backend = usageHandlerBackend(t, cfg, database, engine)
+					}
+					stderr := captureStderr(t, func() {
+						out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested, OwnOnly: ownOnly})
+						require.NoError(t, err)
+						require.NotNil(t, out)
+						assert.Equal(t, expected, out.SessionID)
+						assert.Equal(t, tokenUseExitNoTokenData, code)
+					})
+					assert.Empty(t, stderr)
+					old, err := database.GetSession(t.Context(), requested)
 					require.NoError(t, err)
-					require.NotNil(t, out)
-					assert.Equal(t, expected, out.SessionID)
-					assert.Equal(t, tokenUseExitNoTokenData, code)
+					assert.Nil(t, old)
 				})
-				assert.Empty(t, stderr)
-				old, err := database.GetSession(t.Context(), requested)
-				require.NoError(t, err)
-				assert.Nil(t, old)
-			})
+			}
 		}
 	}
 }
 
 func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
-	root := t.TempDir()
-	cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentCodex: {root}}, InstallationID: "local"}
-	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-	engineConfig := agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true}
-	engine := agentsync.NewEngine(t.Context(), database, engineConfig)
-	const parent = "11111111-1111-4111-8111-111111111111"
-	const child = "22222222-2222-4222-8222-222222222222"
-	const other = "33333333-3333-4333-8333-333333333333"
-	const timestamp = "2026-01-01T00:00:00Z"
-	write := func(id, metadata string, output int) string {
-		path := filepath.Join(root, "rollout-2026-01-01T00-00-00-"+id+".jsonl")
-		require.NoError(t, os.WriteFile(path, []byte(testjsonl.JoinJSONL(metadata,
-			testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
-			testjsonl.CodexMsgJSON("user", "task", timestamp),
-			testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
-			testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0))), 0o600))
-		return path
+	for _, state := range []string{"archived", "new child", "new parent", "missing intermediate"} {
+		t.Run(state, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentCodex: {root}}, InstallationID: "local"}
+			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+			engineConfig := agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true}
+			engine := agentsync.NewEngine(t.Context(), database, engineConfig)
+			const parent = "11111111-1111-4111-8111-111111111111"
+			const child = "22222222-2222-4222-8222-222222222222"
+			const other = "33333333-3333-4333-8333-333333333333"
+			const grandchild = "44444444-4444-4444-8444-444444444444"
+			const timestamp = "2026-01-01T00:00:00Z"
+			write := func(id, metadata string, output int, spawned string) string {
+				path := filepath.Join(root, "rollout-2026-01-01T00-00-00-"+id+".jsonl")
+				lines := []string{metadata, testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
+					testjsonl.CodexMsgJSON("user", "task", timestamp),
+					testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
+					testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0)}
+				if spawned != "" {
+					lines = append(lines, testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn", map[string]any{"message": "child task"}, timestamp),
+						testjsonl.CodexFunctionCallOutputJSON("spawn", `{"agent_id":"`+spawned+`"}`, timestamp))
+				}
+				require.NoError(t, os.WriteFile(path, []byte(testjsonl.JoinJSONL(lines...)), 0o600))
+				return path
+			}
+			parentMeta := testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp)
+			parentPath := write(parent, parentMeta, 10, "")
+			childMeta := testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp)
+			childPath := write(child, childMeta, 1, "")
+			paths := []string{parentPath}
+			if state != "new child" && state != "new parent" {
+				paths = append(paths, childPath)
+			}
+			grandchildMeta := testjsonl.CodexSubagentSessionMetaJSON(grandchild, child, "/work/project", "user", timestamp)
+			if state == "missing intermediate" {
+				paths = append(paths, write(grandchild, grandchildMeta, 2, ""))
+			}
+			if state != "new parent" {
+				require.NoError(t, engine.SyncPathsContext(t.Context(), paths))
+			}
+			engine.Close()
+			if state == "new child" || state == "new parent" {
+				absent, err := database.GetSession(t.Context(), "codex:"+child)
+				require.NoError(t, err)
+				require.Nil(t, absent)
+				write(parent, parentMeta, 10, child)
+			}
+			wantOutput, wantChildren := 52, 1
+			if state == "missing intermediate" {
+				require.NoError(t, database.BaselineActiveSessionSourceOwnerships(t.Context(), []db.SessionSourceOwnership{{ID: "codex:" + child, Machine: "local", Agent: "codex", FilePath: childPath}}))
+				marked, err := database.MarkSessionSourceMissing(t.Context(), "local", "codex", "codex:"+child, childPath)
+				require.NoError(t, err)
+				require.True(t, marked)
+				require.NoError(t, os.Remove(childPath))
+				write(grandchild, grandchildMeta, 42, "")
+				wantOutput, wantChildren = 53, 2
+			} else {
+				write(child, childMeta, 42, "")
+			}
+			write(other, testjsonl.CodexSessionMetaJSON(other, "/work/project", "user", timestamp), 999, "")
+			engine = agentsync.NewEngine(t.Context(), database, engineConfig)
+			t.Cleanup(engine.Close)
+			var backend archiveQueryBackend = usageHandlerBackend(t, cfg, database, engine)
+			if state == "new parent" {
+				backend = localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
+			}
+			require.False(t, engine.StartupReconciled())
+			stderr := captureStderr(t, func() {
+				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:" + parent})
+				require.NoError(t, err)
+				require.NotNil(t, out)
+				assert.Equal(t, tokenUseExitOK, code)
+				assert.Equal(t, wantOutput, out.TotalOutputTokens)
+				assert.Equal(t, wantChildren, out.SubagentCount)
+			})
+			assert.Empty(t, stderr)
+			assert.False(t, engine.StartupReconciled())
+			unrelated, err := database.GetSession(t.Context(), "codex:"+other)
+			require.NoError(t, err)
+			assert.Nil(t, unrelated)
+		})
 	}
-	parentPath := write(parent, testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp), 10)
-	childMeta := testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp)
-	childPath := write(child, childMeta, 1)
-	require.NoError(t, engine.SyncPathsContext(t.Context(), []string{parentPath, childPath}))
-	engine.Close()
-	write(child, childMeta, 42)
-	write(other, testjsonl.CodexSessionMetaJSON(other, "/work/project", "user", timestamp), 999)
-	engine = agentsync.NewEngine(t.Context(), database, engineConfig)
-	t.Cleanup(engine.Close)
-	backend := usageHandlerBackend(t, cfg, database, engine)
-	require.False(t, engine.StartupReconciled())
-	stderr := captureStderr(t, func() {
-		out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:" + parent})
-		require.NoError(t, err)
-		require.NotNil(t, out)
-		assert.Equal(t, tokenUseExitOK, code)
-		assert.Equal(t, 52, out.TotalOutputTokens)
-		assert.Equal(t, 1, out.SubagentCount)
-	})
-	assert.Empty(t, stderr)
-	assert.False(t, engine.StartupReconciled())
-	unrelated, err := database.GetSession(t.Context(), "codex:"+other)
-	require.NoError(t, err)
-	assert.Nil(t, unrelated)
 }

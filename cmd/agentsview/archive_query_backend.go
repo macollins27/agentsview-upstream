@@ -333,11 +333,11 @@ func (b localArchiveQueryBackend) SessionUsage(
 			BlockedResultCategories: b.cfg.ResultContentBlockedCategories,
 			ArchiveContent:          b.cfg.ArchiveContent,
 		})
-		var syncErr error
-		if query.OwnOnly {
-			syncErr = engine.SyncSingleSessionForUsageContext(ctx, resolvedID)
-		} else {
-			syncErr = engine.SyncSessionWithSubagentsContext(ctx, resolvedID)
+		refreshed, syncErr := service.NewDirectBackend(b.database, engine).Sync(ctx, service.SyncInput{
+			ID: resolvedID, Subagents: !query.OwnOnly, UsageRefresh: true,
+		})
+		if syncErr == nil && refreshed != nil {
+			resolvedID = refreshed.ID
 		}
 		if syncErr != nil {
 			fmt.Fprintf(os.Stderr,

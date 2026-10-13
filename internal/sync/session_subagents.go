@@ -17,7 +17,8 @@ var ErrSubagentRefreshIncomplete = errors.New(
 )
 
 // SyncSessionWithSubagentsContext refreshes one session, its archived descendant
-// sources, and newly discovered Claude subagent transcripts. Child discovery runs
+// sources, Claude subagent transcripts, and children named by Codex spawn records.
+// Child discovery runs
 // when the requested-session refresh fails so callers can retain archived data
 // while ingesting any descendants that remain available.
 func (e *Engine) SyncSessionWithSubagentsContext(
@@ -61,19 +62,48 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 		}
 	}
 	paths = unique
-	if len(paths) == 0 {
-		return parentErr
-	}
-
 	var subagentErr error
-	if strings.HasPrefix(sourcePath, "s3://") {
-		subagentErr = e.SyncS3SubagentTranscriptsContext(
-			ctx, sessionID, parentAgent, paths)
-	} else {
-		subagentErr = e.syncPathsContext(ctx, paths, false, false)
+	if len(paths) > 0 {
+		if strings.HasPrefix(sourcePath, "s3://") {
+			subagentErr = e.SyncS3SubagentTranscriptsContext(
+				ctx, sessionID, parentAgent, paths)
+		} else {
+			subagentErr = e.syncPathsContext(ctx, paths, false, false)
+		}
+	}
+	if parentAgent == parser.AgentCodex {
+		subagentErr = errors.Join(subagentErr, e.syncCodexSpawnChildren(ctx, sessionID))
 	}
 	if errors.Is(subagentErr, ErrSyncInProgress) {
 		subagentErr = fmt.Errorf("%w: %w", ErrSubagentRefreshIncomplete, subagentErr)
 	}
 	return errors.Join(parentErr, subagentErr)
+}
+
+func (e *Engine) syncCodexSpawnChildren(ctx context.Context, sessionID string) error {
+	seen := map[string]bool{sessionID: true}
+	parents := []string{sessionID}
+	var refreshErr error
+	for len(parents) > 0 {
+		children, err := e.db.SubagentChildSessionIDs(ctx, parents)
+		if err != nil {
+			return errors.Join(refreshErr, err)
+		}
+		parents = nil
+		for _, childID := range children {
+			if seen[childID] {
+				continue
+			}
+			seen[childID] = true
+			child, err := e.db.GetSession(ctx, childID)
+			if err != nil {
+				return errors.Join(refreshErr, err)
+			}
+			if child == nil {
+				refreshErr = errors.Join(refreshErr, e.SyncSingleSessionForUsageContext(ctx, childID))
+			}
+			parents = append(parents, childID)
+		}
+	}
+	return refreshErr
 }
