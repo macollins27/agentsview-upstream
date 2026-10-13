@@ -267,8 +267,10 @@ func (s *Server) humaTriggerSync(
 		if err != nil {
 			return nil, err
 		}
-		if err := s.rejectStaleArchiveForSync(); err != nil {
-			return nil, err
+		if s.localSyncRunner != nil {
+			if err := s.rejectStaleArchiveForSync(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
@@ -338,12 +340,7 @@ func (s *Server) archiveStale() bool {
 	return ok && local.NeedsResync()
 }
 
-// rejectStaleArchiveForSync fails a worker-backed /sync when the archive's data
-// version changed, because the worker sync pass refuses to swap a stale archive
-// under the live daemon. It points the caller at /resync, which rebuilds through
-// the resync-build flow; it deliberately does not auto-trigger a resync. The
-// in-process path (no worker runner) safely resyncs a stale archive itself, so
-// the gate only applies when the worker-backed runner is wired.
+// rejectStaleArchiveForSync routes targeted syncs and worker-backed syncs to a full rebuild.
 func (s *Server) rejectStaleArchiveForSync() error {
 	local, ok := s.db.(*db.DB)
 	if !ok || !local.NeedsResync() {

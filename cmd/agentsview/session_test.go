@@ -1730,7 +1730,7 @@ func TestSessionUsage_MissingSessionStartupRetry(t *testing.T) {
 				}
 			}))
 			t.Cleanup(ts.Close)
-			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL}}
+			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL, Runtime: &DaemonRuntime{API: server.APIVersion}}}
 			stderr := captureStderr(t, func() {
 				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:missing"})
 				switch status {
