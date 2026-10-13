@@ -539,17 +539,28 @@ func (b *directBackend) Sync(
 	if in.UsageRefresh && in.ID == "" {
 		return nil, errors.New("sync: usage_refresh requires id")
 	}
+	path := in.Path
 	if in.Subagents {
+		if in.UsageRefresh {
+			storedPath := b.local.GetSessionFilePath(ctx, in.ID)
+			if storedPath == "" {
+				return nil, fmt.Errorf(
+					"sync: no file_path recorded for session %q", in.ID,
+				)
+			}
+			path = parser.ResolveSourceFilePath(storedPath)
+		}
 		if err := b.engine.SyncSessionWithSubagentsContext(
 			ctx, in.ID,
 		); err != nil {
 			return nil, err
 		}
-		return b.Get(ctx, in.ID)
+		if !in.UsageRefresh {
+			return b.Get(ctx, in.ID)
+		}
 	}
 
-	path := in.Path
-	if path == "" {
+	if !in.Subagents && path == "" {
 		storedPath := b.local.GetSessionFilePath(ctx, in.ID)
 		if storedPath == "" {
 			return nil, fmt.Errorf(

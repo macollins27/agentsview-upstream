@@ -323,48 +323,50 @@ func TestSessionUsageOwnOnlyRealRefreshFailures(t *testing.T) {
 	}
 }
 
-func TestSessionUsageOwnOnlyVibeReplacementID(t *testing.T) {
+func TestSessionUsageVibeReplacementID(t *testing.T) {
 	for _, promotion := range []bool{false, true} {
-		t.Run(fmt.Sprintf("promotion=%t", promotion), func(t *testing.T) {
-			root := t.TempDir()
-			cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, InstallationID: "local"}
-			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
-			t.Cleanup(engine.Close)
-			const dirName = "session_20260616_083518_abc123"
-			const canonical = "vibe:11111111-1111-4111-8111-111111111111"
-			dir := filepath.Join(root, dirName)
-			require.NoError(t, os.MkdirAll(dir, 0o700))
-			messages := filepath.Join(dir, "messages.jsonl")
-			require.NoError(t, os.WriteFile(messages, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o600))
-			meta := filepath.Join(dir, "meta.json")
-			writeMeta := func() {
-				require.NoError(t, os.WriteFile(meta, []byte(`{"session_id":"11111111-1111-4111-8111-111111111111"}`), 0o600))
-			}
-			if !promotion {
-				writeMeta()
-			}
-			require.NoError(t, engine.SyncPathsContext(t.Context(), []string{messages}))
-			requested, expected := canonical, "vibe:"+dirName
-			if promotion {
-				writeMeta()
-				requested, expected = expected, requested
-			} else {
-				require.NoError(t, os.Remove(meta))
-			}
-			backend := usageHandlerBackend(t, cfg, database, engine)
-			stderr := captureStderr(t, func() {
-				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested, OwnOnly: true})
+		for _, ownOnly := range []bool{false, true} {
+			t.Run(fmt.Sprintf("promotion=%t/own_only=%t", promotion, ownOnly), func(t *testing.T) {
+				root := t.TempDir()
+				cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, InstallationID: "local"}
+				database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+				engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
+				t.Cleanup(engine.Close)
+				const dirName = "session_20260616_083518_abc123"
+				const canonical = "vibe:11111111-1111-4111-8111-111111111111"
+				dir := filepath.Join(root, dirName)
+				require.NoError(t, os.MkdirAll(dir, 0o700))
+				messages := filepath.Join(dir, "messages.jsonl")
+				require.NoError(t, os.WriteFile(messages, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o600))
+				meta := filepath.Join(dir, "meta.json")
+				writeMeta := func() {
+					require.NoError(t, os.WriteFile(meta, []byte(`{"session_id":"11111111-1111-4111-8111-111111111111"}`), 0o600))
+				}
+				if !promotion {
+					writeMeta()
+				}
+				require.NoError(t, engine.SyncPathsContext(t.Context(), []string{messages}))
+				requested, expected := canonical, "vibe:"+dirName
+				if promotion {
+					writeMeta()
+					requested, expected = expected, requested
+				} else {
+					require.NoError(t, os.Remove(meta))
+				}
+				backend := usageHandlerBackend(t, cfg, database, engine)
+				stderr := captureStderr(t, func() {
+					out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested, OwnOnly: ownOnly})
+					require.NoError(t, err)
+					require.NotNil(t, out)
+					assert.Equal(t, expected, out.SessionID)
+					assert.Equal(t, tokenUseExitNoTokenData, code)
+				})
+				assert.Empty(t, stderr)
+				old, err := database.GetSession(t.Context(), requested)
 				require.NoError(t, err)
-				require.NotNil(t, out)
-				assert.Equal(t, expected, out.SessionID)
-				assert.Equal(t, tokenUseExitNoTokenData, code)
+				assert.Nil(t, old)
 			})
-			assert.Empty(t, stderr)
-			old, err := database.GetSession(t.Context(), requested)
-			require.NoError(t, err)
-			assert.Nil(t, old)
-		})
+		}
 	}
 }
 
