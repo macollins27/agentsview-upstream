@@ -9,9 +9,11 @@ import (
 	"go.kenn.io/agentsview/internal/parser"
 )
 
-var subagentTranscriptPaths = parser.SubagentTranscriptPaths
-var discoverCodexS3SessionURIs = parser.DiscoverCodexS3SessionURIs
-var discoverCursorS3SubagentPaths = parser.DiscoverCursorS3SubagentPaths
+var (
+	subagentTranscriptPaths       = parser.SubagentTranscriptPaths
+	discoverCodexS3SessionURIs    = parser.DiscoverCodexS3SessionURIs
+	discoverCursorS3SubagentPaths = parser.DiscoverCursorS3SubagentPaths
+)
 
 // ErrSubagentRefreshIncomplete marks lock contention after the parent refresh.
 var ErrSubagentRefreshIncomplete = errors.New(
