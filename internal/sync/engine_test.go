@@ -10113,13 +10113,11 @@ func TestGeneralSessionRefreshWaitsForBusyLock(t *testing.T) {
 		done <- engine.SyncSingleSessionContext(t.Context(), "parent")
 	}()
 	<-started
-	// Mutex waits prevent virtual time from advancing, so this hold uses real time.
-	time.Sleep(time.Second)
 	select {
 	case err := <-done:
 		engine.syncMu.Unlock()
 		require.FailNow(t, "manual refresh returned while the lock was held beyond the usage deadline", "%v", err)
-	default:
+	case <-time.After(time.Second):
 	}
 	engine.syncMu.Unlock()
 	select {
