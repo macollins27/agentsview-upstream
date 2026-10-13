@@ -541,15 +541,10 @@ func (b *directBackend) Sync(
 	}
 	path := in.Path
 	if in.Subagents {
-		if in.UsageRefresh {
+		if in.UsageRefresh && isVibeSessionID(in.ID) {
 			storedPath := b.local.GetSessionFilePath(ctx, in.ID)
 			if storedPath == "" {
 				storedPath = b.engine.FindSourceFile(ctx, in.ID)
-			}
-			if storedPath == "" {
-				return nil, fmt.Errorf(
-					"sync: no file_path recorded for session %q", in.ID,
-				)
 			}
 			path = parser.ResolveSourceFilePath(storedPath)
 		}

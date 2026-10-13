@@ -1789,19 +1789,42 @@ func TestCanceledForegroundSyncLeavesStartupFallbackEligible(t *testing.T) {
 		"a canceled HTTP sync must leave daemon startup recovery eligible")
 }
 
-func TestHumaSyncSessionLocalNoSyncRejectsStaleDB(t *testing.T) {
-	f := newSyncRouteFixture(t, withStaleDB())
-	sessionPath := f.writeClaudeSession(t, "proj/session.jsonl",
-		"stale session sync route")
-	require.True(t, f.db.NeedsResync())
-	w := postSessionSync(t, f.handler, sessionPath)
-
-	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
-	assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader))
-	assert.True(t, f.db.NeedsResync())
-	session, err := f.db.GetSession(t.Context(), "session")
-	require.NoError(t, err)
-	assert.Nil(t, session)
+func TestHumaSyncSessionStaleArchive(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input service.SyncInput
+	}{
+		{"path", service.SyncInput{}},
+		{"id", service.SyncInput{ID: "session"}},
+		{"subagents", service.SyncInput{ID: "session", Subagents: true}},
+		{"own usage", service.SyncInput{ID: "session", UsageRefresh: true}},
+		{"combined usage", service.SyncInput{ID: "session", Subagents: true, UsageRefresh: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSyncRouteFixture(t, withStaleDB())
+			sessionPath := f.writeClaudeSession(t, "proj/session.jsonl", "stale session sync route")
+			input := tc.input
+			if input.ID == "" {
+				input.Path = sessionPath
+			}
+			require.True(t, f.db.NeedsResync())
+			w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sessions/sync", input)
+			if input.UsageRefresh {
+				require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
+				assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader))
+				assert.True(t, f.db.NeedsResync())
+				session, err := f.db.GetSession(t.Context(), "session")
+				require.NoError(t, err)
+				assert.Nil(t, session)
+				return
+			}
+			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+			assert.Empty(t, w.Header().Get(ResyncRequiredHeader))
+			assert.False(t, f.db.NeedsResync())
+			detail := decodeRecorder[service.SessionDetail](t, w)
+			assertFirstMessageContains(t, detail.FirstMessage, "stale session sync route")
+		})
+	}
 }
 
 type syncErrorSessionService struct {

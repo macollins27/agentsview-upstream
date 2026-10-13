@@ -206,7 +206,7 @@ func httpSessionUsageData(
 		}
 		return nil, tokenUseExitErr, err
 	}
-	if !query.NoSync {
+	if !query.NoSync && (!query.OwnOnly || apiVersion >= server.TargetedSessionSyncAPIVersion) {
 		backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
 		var syncErr error
 		if apiVersion < server.TargetedSessionSyncAPIVersion {

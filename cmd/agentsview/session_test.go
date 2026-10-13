@@ -1630,6 +1630,7 @@ func TestSessionUsage_RemoteRefresh(t *testing.T) {
 		{"busy", server.APIVersion, http.StatusConflict, "sync or maintenance is already running", false, false},
 		{"stale", server.APIVersion, http.StatusConflict, "run agentsview resync", false, true},
 		{"older", 10, 0, "predates targeted session refresh", false, false},
+		{"older own only", 10, 0, "", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			newAgentDataDir(t)
