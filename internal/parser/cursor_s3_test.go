@@ -464,6 +464,10 @@ func TestCursorS3SourceRootWithMarkerNamedParent(t *testing.T) {
 	}
 	assert.Equal(t, root, CursorS3SourceRoot(parent))
 	assert.Equal(t, root, CursorS3SourceRoot(child))
+	assert.Equal(t, root+"/project/agent-transcripts/agent-transcripts/subagents", SubagentTranscriptRoot(AgentCursor, parent))
+	childPaths, err := SubagentTranscriptPaths(t.Context(), AgentCursor, parent)
+	require.NoError(t, err)
+	assert.Equal(t, []string{child}, childPaths)
 	paths, err := DiscoverCursorS3SubagentPaths(t.Context(), CursorS3SourceRoot(parent))
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]string{

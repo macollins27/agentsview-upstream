@@ -23,16 +23,18 @@ func SubagentTranscriptRoot(agent AgentType, sessionPath string) string {
 		}
 		return ""
 	case AgentCursor:
-		loc, ok := cursorTranscriptLocationFromPath(sessionPath)
-		if !ok {
-			return ""
-		}
 		if isS3URI(sessionPath) {
-			before, _, ok := strings.CutLast(sessionPath, "/agent-transcripts/")
+			sourceRoot := CursorS3SourceRoot(sessionPath)
+			rel := strings.TrimPrefix(sessionPath, sourceRoot+"/")
+			loc, ok := cursorS3TranscriptLocation(strings.Split(rel, "/"))
 			if !ok {
 				return ""
 			}
-			return before + "/agent-transcripts/" + loc.RawID + "/" + cursorSubagentsDirName
+			return sourceRoot + "/" + loc.ProjectDir + "/agent-transcripts/" + loc.RawID + "/" + cursorSubagentsDirName
+		}
+		loc, ok := cursorTranscriptLocationFromPath(sessionPath)
+		if !ok {
+			return ""
 		}
 		dir := filepath.Dir(sessionPath)
 		if loc.ParentRawID != "" {
