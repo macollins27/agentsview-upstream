@@ -392,10 +392,12 @@ func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
 			const timestamp = "2026-01-01T00:00:00Z"
 			write := func(id, metadata string, output int, spawned string) string {
 				path := filepath.Join(root, "rollout-2026-01-01T00-00-00-"+id+".jsonl")
-				lines := []string{metadata, testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
+				lines := []string{
+					metadata, testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
 					testjsonl.CodexMsgJSON("user", "task", timestamp),
 					testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
-					testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0)}
+					testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0),
+				}
 				if spawned != "" {
 					lines = append(lines, testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn", map[string]any{"message": "child task"}, timestamp),
 						testjsonl.CodexFunctionCallOutputJSON("spawn", `{"agent_id":"`+spawned+`"}`, timestamp))
