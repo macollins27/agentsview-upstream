@@ -223,10 +223,20 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 			String()),
 		0o644))
 
+	passive, _, err := backend.SessionUsage(
+		ctx, sessionUsageQuery{SessionID: "parent-uuid", NoSync: true})
+	require.NoError(t, err)
+	require.NotNil(t, passive)
+	assert.Zero(t, passive.SubagentCount)
+	missing, err := database.GetSession(ctx, "agent-worker1")
+	require.NoError(t, err)
+	assert.Nil(t, missing)
+
 	out, _, err := backend.SessionUsage(
 		ctx, sessionUsageQuery{SessionID: "parent-uuid"})
 	require.NoError(t, err)
 	require.NotNil(t, out)
+	assert.Equal(t, 1, out.SubagentCount)
 
 	child, err := database.GetSession(ctx, "agent-worker1")
 	require.NoError(t, err)

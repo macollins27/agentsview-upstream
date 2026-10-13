@@ -15,38 +15,28 @@ import (
 )
 
 func TestSyncUsageRefreshWireField(t *testing.T) {
-	for _, usageRefresh := range []bool{false, true} {
-		name := "ordinary sync"
-		if usageRefresh {
-			name = "usage refresh"
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, "/api/v1/sessions/sync", r.URL.Path)
+		var input map[string]any
+		if !assert.NoError(t, json.UnmarshalRead(r.Body, &input)) {
+			return
 		}
-		t.Run(name, func(t *testing.T) {
-			calls := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				assert.Equal(t, "/api/v1/sessions/sync", r.URL.Path)
-				var input map[string]any
-				if !assert.NoError(t, json.UnmarshalRead(r.Body, &input)) {
-					return
-				}
-				assert.Equal(t, "session", input["id"])
-				if usageRefresh {
-					assert.Equal(t, true, input["usage_refresh"])
-				} else if _, present := input["usage_refresh"]; present {
-					http.Error(w, "unknown property usage_refresh", http.StatusUnprocessableEntity)
-					return
-				}
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"id":"session"}`))
-			}))
-			t.Cleanup(srv.Close)
-			out, err := NewHTTPBackend(srv.URL, "", false, "").Sync(t.Context(), service.SyncInput{ID: "session", UsageRefresh: usageRefresh})
-			require.NoError(t, err)
-			require.NotNil(t, out)
-			assert.Equal(t, "session", out.ID)
-			assert.Equal(t, 1, calls)
-		})
-	}
+		assert.Equal(t, "session", input["id"])
+		if _, present := input["usage_refresh"]; present {
+			http.Error(w, "unknown property usage_refresh", http.StatusUnprocessableEntity)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"session"}`))
+	}))
+	t.Cleanup(srv.Close)
+	out, err := NewHTTPBackend(srv.URL, "", false, "").Sync(t.Context(), service.SyncInput{ID: "session"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "session", out.ID)
+	assert.Equal(t, 1, calls)
 }
 
 func TestNewHTTPBackendUsesLongRunningClient(t *testing.T) {

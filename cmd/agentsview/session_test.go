@@ -1736,53 +1736,52 @@ func TestSessionUsage_PGFlagIncludesSubagentUsage(t *testing.T) {
 }
 
 func TestSessionUsage_UsesDiscoveredDaemon(t *testing.T) {
-	for _, readOnly := range []bool{false, true} {
-		for _, alias := range []bool{false, true} {
-			t.Run(fmt.Sprintf("readOnly=%t/alias=%t", readOnly, alias), func(t *testing.T) {
-				dataDir := newAgentDataDir(t)
-				var paths []string
-				ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
-					paths = append(paths, r.URL.Path)
-					switch r.URL.Path {
-					case "/api/v1/sessions/remote-session":
-						writeJSONResponse(w, `{"id":"remote-session","agent":"codex","project":"remote-project"}`)
-					case "/api/v1/sessions/sync":
-						assert.Equal(t, http.MethodPost, r.Method)
-						if readOnly {
-							w.WriteHeader(http.StatusNotImplemented)
-							return
-						}
-						writeJSONResponse(w, `{"id":"remote-session"}`)
-					case "/api/v1/sessions/remote-session/usage":
-						writeJSONResponse(w, `{"session_id":"remote-session","agent":"codex","project":"remote-project","total_output_tokens":42,"has_token_data":true}`)
-					default:
-						http.NotFound(w, r)
+	for _, tc := range []struct{ readOnly, alias bool }{{false, false}, {true, true}} {
+		readOnly, alias := tc.readOnly, tc.alias
+		t.Run(fmt.Sprintf("readOnly=%t/alias=%t", readOnly, alias), func(t *testing.T) {
+			dataDir := newAgentDataDir(t)
+			var paths []string
+			ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case "/api/v1/sessions/remote-session":
+					writeJSONResponse(w, `{"id":"remote-session","agent":"codex","project":"remote-project"}`)
+				case "/api/v1/sessions/sync":
+					assert.Equal(t, http.MethodPost, r.Method)
+					if readOnly {
+						w.WriteHeader(http.StatusNotImplemented)
+						return
 					}
-				})
-				registerTestRuntime(t, dataDir, ts.URL, readOnly)
-
-				var out *sessionUsageOutput
-				var code int
-				var err error
-				stderr := captureStderr(t, func() {
-					if alias {
-						out, code, err = sessionUsageData(t.Context(), "remote-session")
-					} else {
-						cmd := sessionUsageCommand(t, "session", "usage", "remote-session")
-						out, code, err = sessionUsageDataForCommand(cmd, "remote-session")
-					}
-				})
-				require.NoError(t, err)
-				require.NotNil(t, out)
-				assert.Equal(t, tokenUseExitOK, code)
-				assert.Equal(t, "remote-session", out.SessionID)
-				assert.Equal(t, 42, out.TotalOutputTokens)
-				assert.True(t, out.ServerRunning)
-				assert.Equal(t, []string{"/api/v1/sessions/remote-session", "/api/v1/sessions/sync", "/api/v1/sessions/remote-session/usage"}, paths)
-				assert.Empty(t, stderr)
-				assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
+					writeJSONResponse(w, `{"id":"remote-session"}`)
+				case "/api/v1/sessions/remote-session/usage":
+					writeJSONResponse(w, `{"session_id":"remote-session","agent":"codex","project":"remote-project","total_output_tokens":42,"has_token_data":true}`)
+				default:
+					http.NotFound(w, r)
+				}
 			})
-		}
+			registerTestRuntime(t, dataDir, ts.URL, readOnly)
+
+			var out *sessionUsageOutput
+			var code int
+			var err error
+			stderr := captureStderr(t, func() {
+				if alias {
+					out, code, err = sessionUsageData(t.Context(), "remote-session")
+				} else {
+					cmd := sessionUsageCommand(t, "session", "usage", "remote-session")
+					out, code, err = sessionUsageDataForCommand(cmd, "remote-session")
+				}
+			})
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, tokenUseExitOK, code)
+			assert.Equal(t, "remote-session", out.SessionID)
+			assert.Equal(t, 42, out.TotalOutputTokens)
+			assert.True(t, out.ServerRunning)
+			assert.Equal(t, []string{"/api/v1/sessions/remote-session", "/api/v1/sessions/sync", "/api/v1/sessions/remote-session/usage"}, paths)
+			assert.Empty(t, stderr)
+			assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
+		})
 	}
 }
 

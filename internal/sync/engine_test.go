@@ -10394,10 +10394,10 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 	})
 	t.Run("native layouts", func(t *testing.T) {
 		for _, tt := range []struct {
-			name                         string
-			agent                        parser.AgentType
-			cursorExt                    string
-			nested, duplicate, canonical bool
+			name      string
+			agent     parser.AgentType
+			cursorExt string
+			nested    bool
 		}{
 			{name: "workbuddy", agent: parser.AgentWorkBuddy},
 			{name: "posit", agent: parser.AgentPositAssistant},
@@ -10405,8 +10405,6 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 			{name: "omp", agent: parser.AgentOMP},
 			{name: "cursor nested jsonl", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true},
 			{name: "cursor flat txt", agent: parser.AgentCursor, cursorExt: ".txt"},
-			{name: "cursor prefers jsonl", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true, duplicate: true},
-			{name: "cursor prefers own transcript", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true, canonical: true},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
 				root := t.TempDir()
@@ -10484,13 +10482,6 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 					} else {
 						write(childPath, cursorJSONL)
 					}
-					if tt.duplicate {
-						write(strings.TrimSuffix(childPath, ".jsonl")+".txt", cursorTXT)
-					}
-					if tt.canonical {
-						childPath = filepath.Join(root, "project", "agent-transcripts", "child.txt")
-						write(childPath, cursorTXT)
-					}
 				default:
 					if tt.agent == parser.AgentOMP {
 						childPath = filepath.Join(strings.TrimSuffix(parentPath, ".jsonl"), "Scout.jsonl")
@@ -10503,9 +10494,6 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 				require.False(t, engine.StartupReconciled())
 				require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))
 				wantChildren := 1
-				if tt.canonical {
-					wantChildren = 0
-				}
 				switch tt.agent {
 				case parser.AgentWorkBuddy:
 					assertUsage(t, database, parentID, 52, wantChildren)

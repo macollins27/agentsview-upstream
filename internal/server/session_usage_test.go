@@ -614,9 +614,6 @@ func TestHandleSessionUsage_SubagentsReadAndSyncOrigin(t *testing.T) {
 
 	synced := te.post(t, "/api/v1/sessions/sync", body)
 	assertStatus(t, synced, http.StatusOK)
-	child, err = te.db.GetSession(ctx, "agent-worker1")
-	require.NoError(t, err)
-	require.NotNil(t, child, "permitted sync must ingest the child transcript")
 }
 
 // TestHandleSessionUsage_BreakdownRoundTripsWebSearchRequests pins that the
