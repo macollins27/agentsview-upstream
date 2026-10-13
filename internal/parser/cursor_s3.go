@@ -38,16 +38,15 @@ type cursorS3Transcript struct {
 	file DiscoveredFile
 }
 
-func cursorS3SubagentTranscriptPaths(ctx context.Context, sessionPath string) ([]string, error) {
-	byRoot, err := DiscoverCursorS3SubagentPaths(ctx, CursorS3SourceRoot(sessionPath))
-	if err != nil {
-		return nil, err
-	}
-	return byRoot[SubagentTranscriptRoot(AgentCursor, sessionPath)], nil
-}
-
 // CursorS3SourceRoot returns the source root containing a Cursor transcript.
-func CursorS3SourceRoot(sessionPath string) string {
+func CursorS3SourceRoot(sessionPath string, configuredRoots ...string) string {
+	for _, root := range CursorS3SourceRoots(configuredRoots) {
+		if rel, ok := s3RelativePath(root, sessionPath); ok {
+			if _, ok := cursorS3TranscriptLocation(strings.Split(rel, "/")); ok {
+				return strings.TrimSuffix(root, "/")
+			}
+		}
+	}
 	parts := strings.Split(sessionPath, "/")
 	// A marker-named parent can also make its nested transcript look flat.
 	for i := 1; i < len(parts); i++ {
@@ -58,6 +57,19 @@ func CursorS3SourceRoot(sessionPath string) string {
 		}
 	}
 	return ""
+}
+
+// CursorS3SubagentRoot returns the native child prefix for any supported parent layout.
+func CursorS3SubagentRoot(sourceRoot, sessionPath string) string {
+	rel, ok := s3RelativePath(sourceRoot, sessionPath)
+	if !ok || sourceRoot == "" {
+		return ""
+	}
+	loc, ok := cursorS3TranscriptLocation(strings.Split(rel, "/"))
+	if !ok {
+		return ""
+	}
+	return strings.TrimSuffix(sourceRoot, "/") + "/" + loc.ProjectDir + "/agent-transcripts/" + loc.RawID + "/" + cursorSubagentsDirName
 }
 
 // DiscoverCursorS3SubagentPaths indexes canonical children by their subagent directory URI.

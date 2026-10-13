@@ -582,8 +582,9 @@ sessions already present there.
   detached daemon when no compatible daemon is running. It then proxies to
   `POST /api/v1/sessions/sync` so parsing and signal computation remain
   daemon-owned.
-- A stale archive returns HTTP 409 with `X-Agentsview-Resync-Required: true`.
-  Run `agentsview resync` before retrying `session sync`.
+- A usage refresh against a stale archive returns HTTP 409 with
+  `X-Agentsview-Resync-Required: true`. Run `agentsview resync` before retrying.
+  Ordinary session sync rebuilds the archive inline.
 - An ID-based refresh with `subagents=true` or `usage_refresh=true` waits briefly
   for a busy engine, then returns HTTP 409 if the sync or maintenance pass
   continues. If a pass

@@ -26,8 +26,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 	seenIDs := make(map[string]bool)
 	attemptedPaths := make(map[string]bool)
 	discoveredRoots := make(map[string]bool)
-	codexS3Sources := make(map[string]map[string]string)
-	cursorS3Sources := make(map[string]map[string][]string)
+	discovery := subagentSourceDiscovery{engine: e, codexS3: make(map[string]map[string]string), cursorS3: make(map[string]map[string][]string)}
 	queue := []string{sessionID}
 	sourceParents := make(map[string]string)
 	for len(queue) > 0 {
@@ -51,28 +50,10 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		s3ParentID := ""
 		if path == "" && session == nil {
 			parentID := sourceParents[id]
-			parentPath := e.db.GetSessionFilePath(ctx, parentID)
-			host, rawID := parser.StripHostPrefix(id)
-			parentHost, _ := parser.StripHostPrefix(parentID)
-			if isS3SourcePath(parentPath) && host == parentHost && strings.HasPrefix(rawID, "codex:") {
-				configuredRoot := ""
-				for _, root := range e.sources().agentDirs[parser.AgentCodex] {
-					if _, ok := s3RelFromRoot(root, parentPath); ok {
-						configuredRoot = root
-						break
-					}
-				}
-				if root, ok := parser.CodexS3SourceRoot(configuredRoot, parentPath); ok {
-					uris, listed := codexS3Sources[root]
-					if !listed {
-						uris, err = discoverCodexS3SessionURIs(root)
-						codexS3Sources[root] = uris
-						refreshErr = errors.Join(refreshErr, err)
-					}
-					if uri := uris[strings.TrimPrefix(rawID, "codex:")]; uri != "" {
-						path, s3ParentID = uri, parentID
-					}
-				}
+			path, err = discovery.codexSpawnPath(ctx, id, parentID)
+			refreshErr = errors.Join(refreshErr, err)
+			if path != "" {
+				s3ParentID = parentID
 			}
 		}
 		// Retained intermediates still connect descendants while their source is absent.
@@ -100,25 +81,13 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		if path == "" {
 			path = e.db.GetSessionFilePath(ctx, id)
 		}
-		if root := parser.SubagentTranscriptRoot(agent, path); root != "" && !discoveredRoots[root] {
+		if root := discovery.transcriptRoot(agent, path); root != "" && !discoveredRoots[root] {
 			discoveredRoots[root] = true
 			var paths []string
-			var discovered []string
-			var err error
-			if agent == parser.AgentCursor && isS3SourcePath(path) {
-				sourceRoot := parser.CursorS3SourceRoot(path)
-				inventory, listed := cursorS3Sources[sourceRoot]
-				if !listed {
-					inventory, err = discoverCursorS3SubagentPaths(ctx, sourceRoot)
-					cursorS3Sources[sourceRoot] = inventory
-				}
-				discovered = inventory[root]
-			} else {
-				discovered, err = subagentTranscriptPaths(ctx, agent, path)
-			}
+			discovered, err := discovery.transcriptPaths(ctx, agent, path, root)
 			refreshErr = errors.Join(refreshErr, err)
 			for _, childPath := range discovered {
-				if childRoot := parser.SubagentTranscriptRoot(agent, childPath); childRoot != "" && (agent == parser.AgentShelley || samePathOrDescendant(childRoot, root)) {
+				if childRoot := discovery.transcriptRoot(agent, childPath); childRoot != "" && (agent == parser.AgentShelley || samePathOrDescendant(childRoot, root)) {
 					discoveredRoots[childRoot] = true
 				}
 				if !attemptedPaths[childPath] {
@@ -157,4 +126,62 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		}
 	}
 	return refreshErr
+}
+
+type subagentSourceDiscovery struct {
+	engine   *Engine
+	codexS3  map[string]map[string]string
+	cursorS3 map[string]map[string][]string
+}
+
+func (d *subagentSourceDiscovery) codexSpawnPath(ctx context.Context, id, parentID string) (string, error) {
+	parentPath := d.engine.db.GetSessionFilePath(ctx, parentID)
+	host, rawID := parser.StripHostPrefix(id)
+	parentHost, _ := parser.StripHostPrefix(parentID)
+	if !isS3SourcePath(parentPath) || host != parentHost || !strings.HasPrefix(rawID, "codex:") {
+		return "", nil
+	}
+	configuredRoot := ""
+	for _, root := range d.engine.sources().agentDirs[parser.AgentCodex] {
+		if _, ok := s3RelFromRoot(root, parentPath); ok {
+			configuredRoot = root
+			break
+		}
+	}
+	root, ok := parser.CodexS3SourceRoot(configuredRoot, parentPath)
+	if !ok {
+		return "", nil
+	}
+	uris, listed := d.codexS3[root]
+	var err error
+	if !listed {
+		uris, err = discoverCodexS3SessionURIs(root)
+		d.codexS3[root] = uris
+	}
+	return uris[strings.TrimPrefix(rawID, "codex:")], err
+}
+
+func (d *subagentSourceDiscovery) cursorSourceRoot(path string) string {
+	return parser.CursorS3SourceRoot(path, d.engine.sources().agentDirs[parser.AgentCursor]...)
+}
+
+func (d *subagentSourceDiscovery) transcriptRoot(agent parser.AgentType, path string) string {
+	if agent == parser.AgentCursor && isS3SourcePath(path) {
+		return parser.CursorS3SubagentRoot(d.cursorSourceRoot(path), path)
+	}
+	return parser.SubagentTranscriptRoot(agent, path)
+}
+
+func (d *subagentSourceDiscovery) transcriptPaths(ctx context.Context, agent parser.AgentType, path, root string) ([]string, error) {
+	if agent != parser.AgentCursor || !isS3SourcePath(path) {
+		return subagentTranscriptPaths(ctx, agent, path)
+	}
+	sourceRoot := d.cursorSourceRoot(path)
+	inventory, listed := d.cursorS3[sourceRoot]
+	var err error
+	if !listed {
+		inventory, err = discoverCursorS3SubagentPaths(ctx, sourceRoot)
+		d.cursorS3[sourceRoot] = inventory
+	}
+	return inventory[root], err
 }

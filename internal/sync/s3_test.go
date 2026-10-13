@@ -1376,10 +1376,19 @@ func (p statOverrideS3Provider) S3StatSession(uri string) (parser.S3Object, erro
 }
 
 func TestSyncSessionWithS3CursorChild(t *testing.T) {
+	for _, parentLayout := range []string{"project/agent-transcripts/parent/parent.jsonl", "project/parent.jsonl"} {
+		t.Run(parentLayout, func(t *testing.T) {
+			testSyncSessionWithS3CursorChild(t, parentLayout)
+		})
+	}
+}
+
+func testSyncSessionWithS3CursorChild(t *testing.T, parentLayout string) {
+	t.Helper()
 	database := openTestDB(t)
 	const root = "s3://bucket/host-a/raw/cursor"
 	const parentID = "host-a~cursor:parent"
-	const parentPath = root + "/project/agent-transcripts/parent/parent.jsonl"
+	parentPath := root + "/" + parentLayout
 	const childPath = root + "/project/agent-transcripts/parent/subagents/child.jsonl"
 	const siblingPath = root + "/project/agent-transcripts/parent/subagents/sibling.jsonl"
 	content := `{"role":"user","message":{"content":"<user_query>task</user_query>"}}
@@ -1417,7 +1426,11 @@ func TestSyncSessionWithS3CursorChild(t *testing.T) {
 	require.NoError(t, database.UpsertSession(t.Context(), db.Session{
 		ID: parentID, Agent: "cursor", Machine: "host-a", Project: "project", FilePath: &path,
 	}))
-	engine := NewEngine(t.Context(), database, EngineConfig{Machine: "receiver", Ephemeral: true, DeferStartupMaintenance: true})
+	config := EngineConfig{Machine: "receiver", Ephemeral: true, DeferStartupMaintenance: true}
+	if parentLayout == "project/parent.jsonl" {
+		config.AgentDirs = map[parser.AgentType][]string{parser.AgentCursor: {root}}
+	}
+	engine := NewEngine(t.Context(), database, config)
 	t.Cleanup(engine.Close)
 	require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))
 	child, err := database.GetSessionFull(t.Context(), "host-a~cursor:child")
