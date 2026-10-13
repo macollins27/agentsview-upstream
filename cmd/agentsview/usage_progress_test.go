@@ -489,3 +489,48 @@ func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionUsageBeforeStartupImportsRooChild(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentRooCode: {root}}, InstallationID: "local"}
+	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+	engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
+	t.Cleanup(engine.Close)
+	write := func(id, history, messages string) string {
+		dir := filepath.Join(root, "tasks", id)
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		path := filepath.Join(dir, "history_item.json")
+		require.NoError(t, os.WriteFile(path, []byte(history), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ui_messages.json"), []byte(messages), 0o600))
+		return path
+	}
+	parentPath := write("parent-task", `{"id":"parent-task","ts":1767225600000,"task":"parent task","tokensOut":10,"workspace":"/work/project","childIds":["child-task"]}`, `[
+ {"ts":1767225600000,"type":"say","say":"text","text":"parent task"},
+ {"ts":1767225601000,"type":"ask","ask":"tool","text":"{\"tool\":\"newTask\",\"mode\":\"Code\",\"content\":\"child task\"}"},
+ {"ts":1767225602000,"type":"say","say":"subtask_result","text":"done"}
+ ]`)
+	require.NoError(t, engine.SyncPathsContext(t.Context(), []string{parentPath}))
+	spawned, err := database.SubagentChildSessionIDs(t.Context(), []string{"roocode:parent-task"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"roocode:child-task"}, spawned)
+	write("child-task", `{"id":"child-task","parentTaskId":"parent-task","ts":1767225601000,"task":"child task","tokensOut":42,"workspace":"/work/project"}`, `[{"ts":1767225601000,"type":"say","say":"text","text":"child task"}]`)
+	write("unrelated-task", `{"id":"unrelated-task","ts":1767225601000,"task":"unrelated task","tokensOut":999,"workspace":"/work/project"}`, `[{"ts":1767225601000,"type":"say","say":"text","text":"unrelated task"}]`)
+	absent, err := database.GetSession(t.Context(), "roocode:child-task")
+	require.NoError(t, err)
+	require.Nil(t, absent)
+	require.False(t, engine.StartupReconciled())
+	backend := usageHandlerBackend(t, cfg, database, engine)
+	stderr := captureStderr(t, func() {
+		out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "roocode:parent-task"})
+		require.NoError(t, err)
+		require.NotNil(t, out)
+		assert.Equal(t, tokenUseExitOK, code)
+		assert.Equal(t, 52, out.TotalOutputTokens)
+		assert.Equal(t, 1, out.SubagentCount)
+	})
+	assert.Empty(t, stderr)
+	assert.False(t, engine.StartupReconciled())
+	unrelated, err := database.GetSession(t.Context(), "roocode:unrelated-task")
+	require.NoError(t, err)
+	assert.Nil(t, unrelated)
+}

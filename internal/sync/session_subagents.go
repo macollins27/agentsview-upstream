@@ -89,13 +89,11 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		for _, child := range children {
 			queue = append(queue, child.ID)
 		}
-		if isCodexFormatAgent(agent) {
-			spawned, err := e.db.SubagentChildSessionIDs(ctx, []string{id})
-			if err != nil {
-				return errors.Join(refreshErr, err)
-			}
-			queue = append(queue, spawned...)
+		spawned, err := e.db.SubagentChildSessionIDs(ctx, []string{id})
+		if err != nil {
+			return errors.Join(refreshErr, err)
 		}
+		queue = append(queue, spawned...)
 	}
 	return refreshErr
 }
