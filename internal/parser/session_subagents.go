@@ -22,6 +22,11 @@ func SubagentTranscriptRoot(agent AgentType, sessionPath string) string {
 		return ""
 	case AgentPositAssistant:
 		return filepath.Join(filepath.Dir(sessionPath), positAssistantSubagentsDir)
+	case AgentWorkBuddy:
+		if stem, ok := strings.CutSuffix(sessionPath, ".jsonl"); ok {
+			return filepath.Join(stem, "subagents")
+		}
+		return ""
 	case AgentPi, AgentOMP, AgentOMO, AgentStepCode:
 		if root, ok := strings.CutSuffix(sessionPath, ".jsonl"); ok {
 			return root
@@ -54,6 +59,8 @@ func SubagentTranscriptPaths(ctx context.Context, agent AgentType, sessionPath s
 		return nil, nil
 	}
 	switch agent {
+	case AgentWorkBuddy:
+		return workBuddySubagentTranscriptPaths(ctx, root)
 	case AgentShelley:
 		dbPath, parentID, _ := parseShelleyVirtualPath(sessionPath)
 		conn, err := OpenShelleyDB(dbPath)

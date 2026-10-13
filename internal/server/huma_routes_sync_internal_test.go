@@ -1791,13 +1791,11 @@ func TestCanceledForegroundSyncLeavesStartupFallbackEligible(t *testing.T) {
 
 func TestHumaSyncSessionStaleArchive(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		input    service.SyncInput
-		canceled bool
+		name  string
+		input service.SyncInput
 	}{
-		{"path", service.SyncInput{}, false},
-		{"own usage", service.SyncInput{ID: "session", UsageRefresh: true}, false},
-		{"canceled pre-resync", service.SyncInput{}, true},
+		{"path", service.SyncInput{}},
+		{"own usage", service.SyncInput{ID: "session", UsageRefresh: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSyncRouteFixture(t, withStaleDB())
@@ -1807,14 +1805,6 @@ func TestHumaSyncSessionStaleArchive(t *testing.T) {
 				input.Path = sessionPath
 			}
 			require.True(t, f.db.NeedsResync())
-			if tc.canceled {
-				ctx, cancel := context.WithCancel(t.Context())
-				cancel()
-				out, err := f.srv.humaSyncSession(ctx, &sessionSyncInput{Body: input})
-				require.NoError(t, err)
-				assert.Nil(t, out)
-				return
-			}
 			w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sessions/sync", input)
 			if input.UsageRefresh {
 				require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
@@ -1832,6 +1822,24 @@ func TestHumaSyncSessionStaleArchive(t *testing.T) {
 			assertFirstMessageContains(t, detail.FirstMessage, "stale session sync route")
 		})
 	}
+}
+
+func TestHumaSyncSessionCanceledPreResyncReturnsNil(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ran := false
+	f := newSyncRouteFixture(t, withStaleDB(), withLocalResyncRunner(
+		func(ctx context.Context, _ func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+			require.NoError(t, ctx.Err())
+			ran = true
+			cancel()
+			return syncpkg.SyncStats{}, ctx.Err()
+		},
+	))
+	out, err := f.srv.humaSyncSession(ctx, &sessionSyncInput{Body: service.SyncInput{ID: "session"}})
+	assert.True(t, ran)
+	require.NoError(t, err)
+	assert.Nil(t, out)
 }
 
 type syncErrorSessionService struct {
