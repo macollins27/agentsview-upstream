@@ -379,7 +379,7 @@ func TestSessionUsageVibeReplacementID(t *testing.T) {
 
 func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
 	for _, agent := range []parser.AgentType{parser.AgentCodex, parser.AgentTraeX, parser.AgentAugureCode} {
-		for _, state := range []string{"archived", "new child", "new parent", "missing intermediate", "metadata spawn", "imported grandchild", "restored child", "missing spawner"} {
+		for _, state := range []string{"archived", "new child", "new parent", "missing intermediate", "metadata spawn", "imported grandchild", "restored child", "missing spawner", "trashed child", "excluded child"} {
 			t.Run(string(agent)+"/"+state, func(t *testing.T) {
 				def, ok := parser.AgentByType(agent)
 				require.True(t, ok)
@@ -453,6 +453,16 @@ func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
 					wantOutput, wantChildren = 53, 2
 				} else {
 					write(child, childMeta, 42, "")
+				}
+				if state == "trashed child" || state == "excluded child" {
+					write(parent, parentMeta, 10, child)
+					if state == "trashed child" {
+						require.NoError(t, database.SoftDeleteSession(t.Context(), id(child)))
+					} else {
+						require.NoError(t, database.DeleteSession(t.Context(), id(child)))
+					}
+					require.NoError(t, os.Remove(childPath))
+					wantOutput, wantChildren = 10, 0
 				}
 				write(other, testjsonl.CodexSessionMetaJSON(other, "/work/project", "user", timestamp), 999, "")
 				engine = agentsync.NewEngine(t.Context(), database, engineConfig)
