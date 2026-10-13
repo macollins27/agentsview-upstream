@@ -10183,44 +10183,71 @@ func TestTargetedRefreshLockWait(t *testing.T) {
 }
 
 func TestSubagentRefreshMarksContentionAfterParentAsIncomplete(t *testing.T) {
-	fx := newEngineFixture(t)
-	t.Cleanup(fx.engine.Close)
-	parentPath := fx.writeClaudeSession(t, "proj", "parent.jsonl", "hello")
-	require.NoError(t, fx.engine.SyncPathsContext(t.Context(), []string{parentPath}))
-	fx.appendClaudeMessage(t, parentPath, "changed")
-	childPath := filepath.Join(
-		fx.claudeDir, "proj", "parent", "subagents", "agent-child.jsonl",
-	)
-	require.NoError(t, os.MkdirAll(filepath.Dir(childPath), 0o755))
-	require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.NewSessionBuilder().
-		AddClaudeUser("2024-01-01T00:00:00Z", "child").String()), 0o644))
+	for _, agent := range []parser.AgentType{parser.AgentClaude, parser.AgentCodex} {
+		t.Run(string(agent), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				fx := newEngineFixture(t)
+				t.Cleanup(fx.engine.Close)
+				parentPath := fx.writeClaudeSession(t, "proj", "parent.jsonl", "hello")
+				require.NoError(t, fx.engine.SyncPathsContext(t.Context(), []string{parentPath}))
+				fx.appendClaudeMessage(t, parentPath, "changed")
+				childPath := filepath.Join(
+					fx.claudeDir, "proj", "parent", "subagents", "agent-child.jsonl",
+				)
+				require.NoError(t, os.MkdirAll(filepath.Dir(childPath), 0o755))
+				require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.NewSessionBuilder().
+					AddClaudeUser("2024-01-01T00:00:00Z", "child").String()), 0o644))
 
-	locked := make(chan struct{})
-	release := make(chan struct{})
-	lockDone := make(chan error, 1)
-	var releaseOnce gosync.Once
-	releaseLock := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseLock)
-	fx.engine.emitter = emitterFunc(func(scope string) {
-		if scope != "messages" {
-			return
-		}
-		go func() {
-			lockDone <- fx.engine.RunExclusive(func() error {
-				close(locked)
-				<-release
-				return nil
+				parentID := "parent"
+				if agent == parser.AgentCodex {
+					root := t.TempDir()
+					engine := NewEngine(t.Context(), fx.db, EngineConfig{AgentDirs: map[parser.AgentType][]string{agent: {root}}, Machine: "local"})
+					t.Cleanup(engine.Close)
+					fx.engine = engine
+					const uuid = "11111111-1111-4111-8111-111111111111"
+					const timestamp = "2026-01-01T00:00:00Z"
+					parentID = "codex:" + uuid
+					lines := []string{testjsonl.CodexSessionMetaJSON(uuid, "/work/project", "user", timestamp), testjsonl.CodexMsgJSON("user", "task", timestamp)}
+					for i := range 10 {
+						callID := fmt.Sprintf("spawn-%d", i)
+						childID := fmt.Sprintf("22222222-2222-4222-8222-%012d", i)
+						lines = append(lines, testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", callID, map[string]any{"message": "child task"}, timestamp), testjsonl.CodexFunctionCallOutputJSON(callID, `{"agent_id":"`+childID+`"}`, timestamp))
+					}
+					path := filepath.Join(root, "rollout-2026-01-01T00-00-00-"+uuid+".jsonl")
+					require.NoError(t, os.WriteFile(path, []byte(testjsonl.JoinJSONL(lines...)), 0o600))
+				}
+
+				locked := make(chan struct{})
+				release := make(chan struct{})
+				lockDone := make(chan error, 1)
+				var releaseOnce gosync.Once
+				releaseLock := func() { releaseOnce.Do(func() { close(release) }) }
+				t.Cleanup(releaseLock)
+				fx.engine.emitter = emitterFunc(func(scope string) {
+					if scope != "messages" {
+						return
+					}
+					go func() {
+						lockDone <- fx.engine.RunExclusive(func() error {
+							close(locked)
+							<-release
+							return nil
+						})
+					}()
+					<-locked
+				})
+
+				start := time.Now()
+				err := fx.engine.SyncSessionWithSubagentsContext(t.Context(), parentID)
+				require.ErrorIs(t, err, ErrSyncInProgress)
+				require.ErrorIs(t, err, ErrSubagentRefreshIncomplete)
+				assert.Contains(t, err.Error(), "usage aggregate may be incomplete")
+				assert.Equal(t, 250*time.Millisecond, time.Since(start))
+				releaseLock()
+				require.NoError(t, <-lockDone)
 			})
-		}()
-		<-locked
-	})
-
-	err := fx.engine.SyncSessionWithSubagentsContext(t.Context(), "parent")
-	require.ErrorIs(t, err, ErrSyncInProgress)
-	require.ErrorIs(t, err, ErrSubagentRefreshIncomplete)
-	assert.Contains(t, err.Error(), "usage aggregate may be incomplete")
-	releaseLock()
-	require.NoError(t, <-lockDone)
+		})
+	}
 }
 
 func TestEngine_ZeroSyncedSuccessfulResyncEmits(t *testing.T) {

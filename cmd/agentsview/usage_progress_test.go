@@ -378,88 +378,104 @@ func TestSessionUsageVibeReplacementID(t *testing.T) {
 }
 
 func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
-	for _, state := range []string{"archived", "new child", "new parent", "missing intermediate"} {
-		t.Run(state, func(t *testing.T) {
-			root := t.TempDir()
-			cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentCodex: {root}}, InstallationID: "local"}
-			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-			engineConfig := agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true}
-			engine := agentsync.NewEngine(t.Context(), database, engineConfig)
-			const parent = "11111111-1111-4111-8111-111111111111"
-			const child = "22222222-2222-4222-8222-222222222222"
-			const other = "33333333-3333-4333-8333-333333333333"
-			const grandchild = "44444444-4444-4444-8444-444444444444"
-			const timestamp = "2026-01-01T00:00:00Z"
-			write := func(id, metadata string, output int, spawned string) string {
-				path := filepath.Join(root, "rollout-2026-01-01T00-00-00-"+id+".jsonl")
-				lines := []string{
-					metadata, testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
-					testjsonl.CodexMsgJSON("user", "task", timestamp),
-					testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
-					testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0),
+	for _, agent := range []parser.AgentType{parser.AgentCodex, parser.AgentTraeX, parser.AgentAugureCode} {
+		for _, state := range []string{"archived", "new child", "new parent", "missing intermediate", "metadata spawn", "imported grandchild", "restored child", "missing spawner"} {
+			t.Run(string(agent)+"/"+state, func(t *testing.T) {
+				def, ok := parser.AgentByType(agent)
+				require.True(t, ok)
+				id := func(raw string) string { return def.IDPrefix + raw }
+				root := t.TempDir()
+				cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{agent: {root}}, InstallationID: "local"}
+				database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+				engineConfig := agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true}
+				engine := agentsync.NewEngine(t.Context(), database, engineConfig)
+				const parent = "11111111-1111-4111-8111-111111111111"
+				const child = "22222222-2222-4222-8222-222222222222"
+				const other = "33333333-3333-4333-8333-333333333333"
+				const grandchild = "44444444-4444-4444-8444-444444444444"
+				const timestamp = "2026-01-01T00:00:00Z"
+				write := func(id, metadata string, output int, spawned string) string {
+					path := filepath.Join(root, "rollout-2026-01-01T00-00-00-"+id+".jsonl")
+					lines := []string{
+						metadata, testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
+						testjsonl.CodexMsgJSON("user", "task", timestamp),
+						testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
+						testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0),
+					}
+					if spawned != "" {
+						lines = append(lines, testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn", map[string]any{"message": "child task"}, timestamp),
+							testjsonl.CodexFunctionCallOutputJSON("spawn", `{"agent_id":"`+spawned+`"}`, timestamp))
+					}
+					require.NoError(t, os.WriteFile(path, []byte(testjsonl.JoinJSONL(lines...)), 0o600))
+					return path
 				}
-				if spawned != "" {
-					lines = append(lines, testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn", map[string]any{"message": "child task"}, timestamp),
-						testjsonl.CodexFunctionCallOutputJSON("spawn", `{"agent_id":"`+spawned+`"}`, timestamp))
+				parentMeta := testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp)
+				parentPath := write(parent, parentMeta, 10, "")
+				childMeta := testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp)
+				childPath := write(child, childMeta, 1, "")
+				paths := []string{parentPath}
+				if state != "new child" && state != "new parent" && state != "imported grandchild" {
+					paths = append(paths, childPath)
 				}
-				require.NoError(t, os.WriteFile(path, []byte(testjsonl.JoinJSONL(lines...)), 0o600))
-				return path
-			}
-			parentMeta := testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp)
-			parentPath := write(parent, parentMeta, 10, "")
-			childMeta := testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp)
-			childPath := write(child, childMeta, 1, "")
-			paths := []string{parentPath}
-			if state != "new child" && state != "new parent" {
-				paths = append(paths, childPath)
-			}
-			grandchildMeta := testjsonl.CodexSubagentSessionMetaJSON(grandchild, child, "/work/project", "user", timestamp)
-			if state == "missing intermediate" {
-				paths = append(paths, write(grandchild, grandchildMeta, 2, ""))
-			}
-			if state != "new parent" {
-				require.NoError(t, engine.SyncPathsContext(t.Context(), paths))
-			}
-			engine.Close()
-			if state == "new child" || state == "new parent" {
-				absent, err := database.GetSession(t.Context(), "codex:"+child)
+				grandchildMeta := testjsonl.CodexSubagentSessionMetaJSON(grandchild, child, "/work/project", "user", timestamp)
+				if state == "missing spawner" {
+					write(child, childMeta, 1, grandchild)
+				}
+				if state == "missing intermediate" || state == "imported grandchild" {
+					paths = append(paths, write(grandchild, grandchildMeta, 2, ""))
+				}
+				if state != "new parent" {
+					require.NoError(t, engine.SyncPathsContext(t.Context(), paths))
+				}
+				engine.Close()
+				if state == "new child" || state == "new parent" || state == "imported grandchild" {
+					absent, err := database.GetSession(t.Context(), id(child))
+					require.NoError(t, err)
+					require.Nil(t, absent)
+					write(parent, parentMeta, 10, child)
+				}
+				wantOutput, wantChildren := 52, 1
+				if state == "missing intermediate" || state == "restored child" || state == "missing spawner" {
+					require.NoError(t, database.BaselineActiveSessionSourceOwnerships(t.Context(), []db.SessionSourceOwnership{{ID: id(child), Machine: "local", Agent: string(agent), FilePath: childPath}}))
+					marked, err := database.MarkSessionSourceMissing(t.Context(), "local", string(agent), id(child), childPath)
+					require.NoError(t, err)
+					require.True(t, marked)
+					require.NoError(t, os.Remove(childPath))
+					if state == "restored child" {
+						write(child, childMeta, 42, "")
+					} else {
+						write(grandchild, grandchildMeta, 42, "")
+						wantOutput, wantChildren = 53, 2
+					}
+				} else if state == "metadata spawn" || state == "imported grandchild" {
+					write(child, childMeta, 1, grandchild)
+					write(grandchild, grandchildMeta, 42, "")
+					wantOutput, wantChildren = 53, 2
+				} else {
+					write(child, childMeta, 42, "")
+				}
+				write(other, testjsonl.CodexSessionMetaJSON(other, "/work/project", "user", timestamp), 999, "")
+				engine = agentsync.NewEngine(t.Context(), database, engineConfig)
+				t.Cleanup(engine.Close)
+				var backend archiveQueryBackend = usageHandlerBackend(t, cfg, database, engine)
+				if state == "new parent" {
+					backend = localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
+				}
+				require.False(t, engine.StartupReconciled())
+				stderr := captureStderr(t, func() {
+					out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: id(parent)})
+					require.NoError(t, err)
+					require.NotNil(t, out)
+					assert.Equal(t, tokenUseExitOK, code)
+					assert.Equal(t, wantOutput, out.TotalOutputTokens)
+					assert.Equal(t, wantChildren, out.SubagentCount)
+				})
+				assert.Empty(t, stderr)
+				assert.False(t, engine.StartupReconciled())
+				unrelated, err := database.GetSession(t.Context(), id(other))
 				require.NoError(t, err)
-				require.Nil(t, absent)
-				write(parent, parentMeta, 10, child)
-			}
-			wantOutput, wantChildren := 52, 1
-			if state == "missing intermediate" {
-				require.NoError(t, database.BaselineActiveSessionSourceOwnerships(t.Context(), []db.SessionSourceOwnership{{ID: "codex:" + child, Machine: "local", Agent: "codex", FilePath: childPath}}))
-				marked, err := database.MarkSessionSourceMissing(t.Context(), "local", "codex", "codex:"+child, childPath)
-				require.NoError(t, err)
-				require.True(t, marked)
-				require.NoError(t, os.Remove(childPath))
-				write(grandchild, grandchildMeta, 42, "")
-				wantOutput, wantChildren = 53, 2
-			} else {
-				write(child, childMeta, 42, "")
-			}
-			write(other, testjsonl.CodexSessionMetaJSON(other, "/work/project", "user", timestamp), 999, "")
-			engine = agentsync.NewEngine(t.Context(), database, engineConfig)
-			t.Cleanup(engine.Close)
-			var backend archiveQueryBackend = usageHandlerBackend(t, cfg, database, engine)
-			if state == "new parent" {
-				backend = localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
-			}
-			require.False(t, engine.StartupReconciled())
-			stderr := captureStderr(t, func() {
-				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:" + parent})
-				require.NoError(t, err)
-				require.NotNil(t, out)
-				assert.Equal(t, tokenUseExitOK, code)
-				assert.Equal(t, wantOutput, out.TotalOutputTokens)
-				assert.Equal(t, wantChildren, out.SubagentCount)
+				assert.Nil(t, unrelated)
 			})
-			assert.Empty(t, stderr)
-			assert.False(t, engine.StartupReconciled())
-			unrelated, err := database.GetSession(t.Context(), "codex:"+other)
-			require.NoError(t, err)
-			assert.Nil(t, unrelated)
-		})
+		}
 	}
 }

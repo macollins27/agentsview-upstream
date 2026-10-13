@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"go.kenn.io/agentsview/internal/parser"
 )
@@ -16,93 +15,81 @@ var ErrSubagentRefreshIncomplete = errors.New(
 	"subagent refresh incomplete; usage aggregate may be incomplete",
 )
 
-// SyncSessionWithSubagentsContext refreshes one session, its archived descendant
-// sources, Claude subagent transcripts, and children named by Codex spawn records.
-// Child discovery runs
-// when the requested-session refresh fails so callers can retain archived data
-// while ingesting any descendants that remain available.
-func (e *Engine) SyncSessionWithSubagentsContext(
-	ctx context.Context,
-	sessionID string,
-) error {
-	parentErr := e.SyncSingleSessionForUsageContext(ctx, sessionID)
-	if errors.Is(parentErr, ErrSyncInProgress) {
-		return parentErr
-	}
-
-	// The archive session ID carries its agent prefix (host prefixes are
-	// stripped first), so the parent agent resolves without a row lookup and
-	// stays correct even when the parent is soft-deleted.
-	parentAgent := parser.AgentClaude
-	if def, ok := parser.AgentByPrefix(sessionID); ok {
-		parentAgent = def.Type
-	}
-	sourcePath := e.db.GetSessionFilePath(ctx, sessionID)
-	if sourcePath == "" {
-		sourcePath = e.FindSourceFile(ctx, sessionID)
-	}
-	paths := subagentTranscriptPaths(sourcePath)
-	parent, lookupErr := e.db.GetSession(ctx, sessionID)
-	if lookupErr != nil {
-		return errors.Join(parentErr, lookupErr)
-	}
-	if parent != nil {
-		descendantPaths, err := e.db.ListActiveDescendantSessionSourcePaths(ctx, parent.Machine, parent.Agent, []string{sessionID})
-		if err != nil {
-			return errors.Join(parentErr, err)
-		}
-		paths = append(paths, descendantPaths...)
-	}
-	seen := map[string]bool{sourcePath: true}
-	unique := paths[:0]
-	for _, path := range paths {
-		if !seen[path] {
-			seen[path] = true
-			unique = append(unique, path)
-		}
-	}
-	paths = unique
-	var subagentErr error
-	if len(paths) > 0 {
-		if strings.HasPrefix(sourcePath, "s3://") {
-			subagentErr = e.SyncS3SubagentTranscriptsContext(
-				ctx, sessionID, parentAgent, paths)
-		} else {
-			subagentErr = e.syncPathsContext(ctx, paths, false, false)
-		}
-	}
-	if parentAgent == parser.AgentCodex {
-		subagentErr = errors.Join(subagentErr, e.syncCodexSpawnChildren(ctx, sessionID))
-	}
-	if errors.Is(subagentErr, ErrSyncInProgress) {
-		subagentErr = fmt.Errorf("%w: %w", ErrSubagentRefreshIncomplete, subagentErr)
-	}
-	return errors.Join(parentErr, subagentErr)
-}
-
-func (e *Engine) syncCodexSpawnChildren(ctx context.Context, sessionID string) error {
-	seen := map[string]bool{sessionID: true}
-	parents := []string{sessionID}
+// SyncSessionWithSubagentsContext refreshes reachable archived and newly spawned sessions.
+func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID string) error {
 	var refreshErr error
-	for len(parents) > 0 {
-		children, err := e.db.SubagentChildSessionIDs(ctx, parents)
+	seenIDs := make(map[string]bool)
+	attemptedPaths := make(map[string]bool)
+	queue := []string{sessionID}
+	for len(queue) > 0 {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(refreshErr, err)
+		}
+		id := queue[0]
+		queue = queue[1:]
+		if seenIDs[id] {
+			continue
+		}
+		seenIDs[id] = true
+		session, err := e.db.GetSession(ctx, id)
 		if err != nil {
 			return errors.Join(refreshErr, err)
 		}
-		parents = nil
-		for _, childID := range children {
-			if seen[childID] {
-				continue
+		path := e.FindSourceFile(ctx, id)
+		// Retained intermediates still connect descendants while their source is absent.
+		if !attemptedPaths[path] && (path != "" || session == nil || id == sessionID) {
+			if path != "" {
+				attemptedPaths[path] = true
 			}
-			seen[childID] = true
-			child, err := e.db.GetSession(ctx, childID)
+			err = e.SyncSingleSessionForUsageContext(ctx, id)
+			refreshErr = errors.Join(refreshErr, err)
+			if errors.Is(err, ErrSyncInProgress) {
+				if id == sessionID {
+					return refreshErr
+				}
+				return fmt.Errorf("%w: %w", ErrSubagentRefreshIncomplete, refreshErr)
+			}
+		}
+		agent := parser.AgentClaude
+		if def, ok := parser.AgentByPrefix(id); ok {
+			agent = def.Type
+		}
+		if agent == parser.AgentClaude {
+			if path == "" {
+				path = e.db.GetSessionFilePath(ctx, id)
+			}
+			var paths []string
+			for _, childPath := range subagentTranscriptPaths(path) {
+				if !attemptedPaths[childPath] {
+					attemptedPaths[childPath] = true
+					paths = append(paths, childPath)
+				}
+			}
+			if len(paths) > 0 {
+				if isS3SourcePath(path) {
+					err = e.SyncS3SubagentTranscriptsContext(ctx, id, agent, paths)
+				} else {
+					err = e.syncPathsContext(ctx, paths, false, false)
+				}
+				refreshErr = errors.Join(refreshErr, err)
+				if errors.Is(err, ErrSyncInProgress) {
+					return fmt.Errorf("%w: %w", ErrSubagentRefreshIncomplete, refreshErr)
+				}
+			}
+		}
+		children, err := e.db.GetChildSessions(ctx, id)
+		if err != nil {
+			return errors.Join(refreshErr, err)
+		}
+		for _, child := range children {
+			queue = append(queue, child.ID)
+		}
+		if isCodexFormatAgent(agent) {
+			spawned, err := e.db.SubagentChildSessionIDs(ctx, []string{id})
 			if err != nil {
 				return errors.Join(refreshErr, err)
 			}
-			if child == nil {
-				refreshErr = errors.Join(refreshErr, e.SyncSingleSessionForUsageContext(ctx, childID))
-			}
-			parents = append(parents, childID)
+			queue = append(queue, spawned...)
 		}
 	}
 	return refreshErr
