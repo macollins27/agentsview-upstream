@@ -10506,14 +10506,15 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 				if tt.canonical {
 					wantChildren = 0
 				}
-				if tt.agent == parser.AgentWorkBuddy {
+				switch tt.agent {
+				case parser.AgentWorkBuddy:
 					assertUsage(t, database, parentID, 52, wantChildren)
 					unrelated, err := database.GetSession(t.Context(), "workbuddy:other")
 					require.NoError(t, err)
 					assert.Nil(t, unrelated)
-				} else if tt.agent == parser.AgentPi || tt.agent == parser.AgentOMP {
+				case parser.AgentPi, parser.AgentOMP:
 					assertUsage(t, database, parentID, 84, wantChildren)
-				} else {
+				default:
 					children, err := database.GetChildSessions(t.Context(), parentID)
 					require.NoError(t, err)
 					assert.Len(t, children, wantChildren)
