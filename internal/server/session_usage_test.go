@@ -583,7 +583,7 @@ func TestHandleSessionUsage_SubagentsReadAndSyncOrigin(t *testing.T) {
 		[]byte(testjsonl.NewSessionBuilder().
 			AddClaudeUserWithSessionID(
 				"2026-05-20T10:01:00Z", "do the subtask", "parent-uuid").
-			AddClaudeAssistantUsage("2026-05-20T10:01:30Z", "subtask done", testjsonl.ClaudeAssistantUsage{OutputTokens: 42}).
+			AddClaudeAssistant("2026-05-20T10:01:30Z", "subtask done").
 			String()),
 		0o644,
 	))

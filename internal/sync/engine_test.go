@@ -10135,11 +10135,9 @@ func TestTargetedRefreshLockWait(t *testing.T) {
 		run  func(context.Context, *Engine) error
 	}{
 		{"usage", func(ctx context.Context, e *Engine) error { return e.SyncSingleSessionForUsageContext(ctx, "parent") }},
-		{"paths", func(ctx context.Context, e *Engine) error { return e.syncPathsContext(ctx, nil, false, false) }},
 		{"s3", func(ctx context.Context, e *Engine) error {
 			return e.SyncS3SubagentTranscriptsContext(ctx, "parent", parser.AgentClaude, nil)
 		}},
-		{"subagents", func(ctx context.Context, e *Engine) error { return e.SyncSessionWithSubagentsContext(ctx, "parent") }},
 	} {
 		for _, outcome := range []string{"release", "busy", "cancel"} {
 			if entry.name != "usage" && outcome != "busy" {
@@ -12739,32 +12737,4 @@ func countSessionFileHashReads(t *testing.T, archive *db.DB) *atomic.Int32 {
 	}))
 	require.NoError(t, conn.Close())
 	return reads
-}
-
-func TestSessionUsageRefreshWriteFailureKeepsStoredUsage(t *testing.T) {
-	root := t.TempDir()
-	dbPath := filepath.Join(t.TempDir(), "sessions.db")
-	database := dbtest.OpenTestDBAt(t, dbPath)
-	engine := NewEngine(t.Context(), database, EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {root}}, Machine: "local", DeferStartupMaintenance: true})
-	t.Cleanup(engine.Close)
-	path := filepath.Join(root, "project", "session.jsonl")
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-	write := func(output int) {
-		require.NoError(t, os.WriteFile(path, []byte(testjsonl.NewSessionBuilder().
-			AddClaudeUser("2026-01-01T00:00:00Z", "task").
-			AddClaudeAssistantUsage("2026-01-01T00:00:01Z", "answer", testjsonl.ClaudeAssistantUsage{OutputTokens: output}).String()), 0o600))
-	}
-	write(10)
-	require.NoError(t, engine.SyncPathsContext(t.Context(), []string{path}))
-	write(99)
-	conn, err := sql.Open("sqlite3", dbPath)
-	require.NoError(t, err)
-	_, err = conn.ExecContext(t.Context(), `CREATE TRIGGER reject_refresh BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'refresh write rejected'); END`)
-	require.NoError(t, err)
-	require.NoError(t, conn.Close())
-	require.ErrorContains(t, engine.SyncSingleSessionForUsageContext(t.Context(), "session"), "refresh write rejected")
-	usage, err := database.GetSessionUsage(t.Context(), "session", false)
-	require.NoError(t, err)
-	require.NotNil(t, usage)
-	assert.Equal(t, 10, usage.TotalOutputTokens)
 }

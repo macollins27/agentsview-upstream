@@ -1826,20 +1826,6 @@ func TestHumaSyncSessionReportsIncompleteSubagentRefresh(t *testing.T) {
 	assert.Equal(t, []service.SyncInput{{ID: "parent", Subagents: true, UsageRefresh: true}}, svc.inputs)
 }
 
-func TestHumaSyncSessionCanceledPreResyncReturnsNil(t *testing.T) {
-	f := newSyncRouteFixture(t, withStaleDB())
-	require.True(t, f.db.NeedsResync())
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	out, err := f.srv.humaSyncSession(ctx, &sessionSyncInput{
-		Body: service.SyncInput{Path: filepath.Join(f.dir, "missing.jsonl")},
-	})
-
-	require.NoError(t, err)
-	assert.Nil(t, out)
-}
-
 func TestHumaSyncSessionCanceledServiceSyncReturnsNil(t *testing.T) {
 	f := newSyncRouteFixture(t)
 

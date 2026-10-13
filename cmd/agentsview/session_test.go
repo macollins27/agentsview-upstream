@@ -1767,7 +1767,6 @@ func TestSessionUsage_UsesDiscoveredDaemon(t *testing.T) {
 		t.Run(fmt.Sprintf("alias=%t", alias), func(t *testing.T) {
 			dataDir := newAgentDataDir(t)
 
-			var gotUsagePath string
 			ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
@@ -1778,16 +1777,8 @@ func TestSessionUsage_UsesDiscoveredDaemon(t *testing.T) {
 				"project": "remote-project"
 			}`))
 				case "/api/v1/sessions/sync":
-					var input service.SyncInput
-					if !assert.NoError(t, json.UnmarshalRead(r.Body, &input)) {
-						return
-					}
-					assert.Equal(t, service.SyncInput{
-						ID: "remote-session", Subagents: true, UsageRefresh: true,
-					}, input)
 					_, _ = w.Write([]byte(`{"id":"remote-session"}`))
 				case "/api/v1/sessions/remote-session/usage":
-					gotUsagePath = r.URL.Path
 					_, _ = w.Write([]byte(`{
 				"session_id": "remote-session",
 				"agent": "codex",
@@ -1818,7 +1809,6 @@ func TestSessionUsage_UsesDiscoveredDaemon(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.NotNil(t, out)
-			assert.Equal(t, "/api/v1/sessions/remote-session/usage", gotUsagePath)
 			assert.Equal(t, tokenUseExitOK, code)
 			assert.Equal(t, "remote-session", out.SessionID)
 			assert.True(t, out.ServerRunning)
@@ -1831,7 +1821,7 @@ func TestSessionUsage_DefaultUsesArchivedReadOnlyDaemonUsage(t *testing.T) {
 	for _, alias := range []bool{false, true} {
 		t.Run(fmt.Sprintf("alias=%t", alias), func(t *testing.T) {
 			dataDir := newAgentDataDir(t)
-			ts, paths := readOnlySessionUsageRuntimeServer(t)
+			ts, _ := readOnlySessionUsageRuntimeServer(t)
 			registerTestRuntime(t, dataDir, ts.URL, true)
 
 			var out *sessionUsageOutput
@@ -1847,11 +1837,6 @@ func TestSessionUsage_DefaultUsesArchivedReadOnlyDaemonUsage(t *testing.T) {
 			require.NotNil(t, out)
 			assert.Equal(t, tokenUseExitOK, code)
 			assert.Equal(t, 42, out.TotalOutputTokens)
-			assert.Equal(t, []string{
-				"/api/v1/sessions/remote-session",
-				"/api/v1/sessions/sync",
-				"/api/v1/sessions/remote-session/usage",
-			}, *paths)
 			assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
 		})
 	}

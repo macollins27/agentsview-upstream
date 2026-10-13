@@ -14,7 +14,7 @@ import (
 	"go.kenn.io/agentsview/internal/service"
 )
 
-func TestSyncOmitsUsageRefreshForOlderServers(t *testing.T) {
+func TestSyncUsageRefreshWireField(t *testing.T) {
 	for _, usageRefresh := range []bool{false, true} {
 		name := "ordinary sync"
 		if usageRefresh {
