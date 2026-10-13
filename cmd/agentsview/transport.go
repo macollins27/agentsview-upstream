@@ -283,8 +283,7 @@ func ensureTransportContext(
 			if err != nil {
 				return transport{}, err
 			}
-			tr = transportFromRuntime(rt)
-			return tr, nil
+			return transportFromRuntime(rt), nil
 		}
 		return tr, nil
 	}
@@ -307,8 +306,7 @@ func ensureTransportContext(
 			if err != nil {
 				return transport{}, err
 			}
-			tr = transportFromRuntime(rt)
-			return tr, nil
+			return transportFromRuntime(rt), nil
 		}
 	}
 	if intent == transportIntentRead {
@@ -338,8 +336,7 @@ func ensureTransportContext(
 		if err != nil {
 			return transport{}, err
 		}
-		tr = transportFromRuntime(rt)
-		return tr, nil
+		return transportFromRuntime(rt), nil
 	}
 	if daemonAutostartDisabled() {
 		if tr.DirectIncompatible {
@@ -373,8 +370,7 @@ func ensureTransportContext(
 	if err != nil {
 		return transport{}, err
 	}
-	tr = transportFromRuntime(rt)
-	return tr, nil
+	return transportFromRuntime(rt), nil
 }
 
 func waitForBackgroundLaunchBeforeArchiveWrite(

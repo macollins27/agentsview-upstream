@@ -57,6 +57,10 @@ func (tr offlineRemoteTransport) RoundTrip(
 	return nil, syscall.ETIMEDOUT
 }
 
+type syncRouteEmitterFunc func(scope string)
+
+func (f syncRouteEmitterFunc) Emit(scope string) { f(scope) }
+
 type syncRouteFixtureConfig struct {
 	stale          bool
 	archiveContent config.ArchiveContent
@@ -1809,6 +1813,62 @@ func TestHumaSyncSessionLocalNoSyncRejectsStaleDB(t *testing.T) {
 	session, err := f.db.GetSession(t.Context(), "session")
 	require.NoError(t, err)
 	assert.Nil(t, session)
+}
+
+func TestHumaSyncSessionReportsIncompleteSubagentRefresh(t *testing.T) {
+	f := newSyncRouteFixture(t)
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	var emitterOnce stdlibsync.Once
+	var releaseOnce stdlibsync.Once
+	var engine *syncpkg.Engine
+	active := false
+	emitter := syncRouteEmitterFunc(func(scope string) {
+		if !active || scope != "messages" {
+			return
+		}
+		emitterOnce.Do(func() {
+			go func() {
+				lockDone <- engine.RunExclusive(func() error {
+					close(locked)
+					<-release
+					return nil
+				})
+			}()
+			<-locked
+		})
+	})
+	engine = syncpkg.NewEngine(t.Context(), f.db, syncpkg.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {f.claudeDir}},
+		Machine:   "local",
+		Emitter:   emitter,
+	})
+	releaseLock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseLock()
+		engine.Close()
+	})
+	parentPath := f.writeClaudeSession(t, "proj/parent.jsonl", "parent")
+	require.NoError(t, engine.SyncPathsContext(t.Context(), []string{parentPath}))
+	f.writeClaudeSession(t, "proj/parent.jsonl", "parent refresh")
+	childPath := filepath.Join(
+		f.claudeDir, "proj", "parent", "subagents", "agent-child.jsonl",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(childPath), 0o755))
+	require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser("2024-01-01T00:00:00Z", "child").String()), 0o644))
+	f.srv.engine = engine
+	f.srv.sessions = service.NewDirectBackend(f.db, engine)
+	active = true
+
+	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sessions/sync",
+		service.SyncInput{ID: "parent", Subagents: true})
+	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "usage aggregate may be incomplete")
+	assert.Contains(t, w.Body.String(), "subagents were skipped")
+	releaseLock()
+	require.NoError(t, <-lockDone)
 }
 
 func TestHumaSyncSessionCanceledPreResyncReturnsNil(t *testing.T) {

@@ -3,12 +3,18 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"go.kenn.io/agentsview/internal/parser"
 )
 
 var subagentTranscriptPaths = parser.ClaudeSubagentTranscriptPaths
+
+// ErrSubagentRefreshIncomplete marks lock contention after the parent refresh.
+var ErrSubagentRefreshIncomplete = errors.New(
+	"subagent refresh incomplete; usage aggregate may be incomplete",
+)
 
 // SyncSessionWithSubagentsContext refreshes one session and the candidate
 // Claude subagent transcripts in its root tree. Child discovery still runs
@@ -18,7 +24,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 	ctx context.Context,
 	sessionID string,
 ) error {
-	parentErr := e.SyncSingleSessionContext(ctx, sessionID)
+	parentErr := e.SyncSingleSessionForUsageContext(ctx, sessionID)
 	if errors.Is(parentErr, ErrSyncInProgress) {
 		return parentErr
 	}
@@ -45,6 +51,9 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 			ctx, sessionID, parentAgent, paths)
 	} else {
 		subagentErr = e.syncPathsContext(ctx, paths, false, false)
+	}
+	if errors.Is(subagentErr, ErrSyncInProgress) {
+		subagentErr = fmt.Errorf("%w: %w", ErrSubagentRefreshIncomplete, subagentErr)
 	}
 	return errors.Join(parentErr, subagentErr)
 }

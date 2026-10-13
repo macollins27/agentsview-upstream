@@ -10098,7 +10098,7 @@ func TestEngine_TryRunExclusiveRejectsBusySyncWithoutRunningWork(t *testing.T) {
 		require.ErrorIs(t, err, ErrSyncInProgress)
 		assert.False(t, workRan)
 		for _, refresh := range []func() error{
-			func() error { return engine.SyncSingleSessionContext(t.Context(), "parent") },
+			func() error { return engine.syncSingleSessionContext(t.Context(), "parent", false) },
 			func() error { return engine.SyncSessionWithSubagentsContext(t.Context(), "parent") },
 			func() error { return engine.syncPathsContext(t.Context(), nil, false, false) },
 			func() error {
@@ -10109,6 +10109,124 @@ func TestEngine_TryRunExclusiveRejectsBusySyncWithoutRunningWork(t *testing.T) {
 		}
 		release <- struct{}{}
 		require.NoError(t, <-done)
+	})
+}
+
+func TestGeneralSessionRefreshWaitsForBusyLock(t *testing.T) {
+	engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
+	t.Cleanup(engine.Close)
+	engine.syncMu.Lock()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- engine.SyncSingleSessionContext(t.Context(), "parent")
+	}()
+	<-started
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case err := <-done:
+		engine.syncMu.Unlock()
+		require.FailNow(t, "general refresh returned before the lock was released", "%v", err)
+	default:
+	}
+	engine.syncMu.Unlock()
+	select {
+	case err := <-done:
+		assert.NotErrorIs(t, err, ErrSyncInProgress)
+	case <-time.After(time.Second):
+		require.FailNow(t, "general refresh did not finish after the lock was released")
+	}
+}
+
+func TestTargetedRefreshWaitsForBriefContention(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
+		t.Cleanup(engine.Close)
+		engine.syncMu.Lock()
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			engine.syncMu.Unlock()
+		}()
+		require.NoError(t, engine.syncPathsContext(t.Context(), nil, false, false))
+		engine.syncMu.Lock()
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			engine.syncMu.Unlock()
+		}()
+		require.NoError(t, engine.SyncS3SubagentTranscriptsContext(
+			t.Context(), "parent", parser.AgentClaude, nil,
+		))
+	})
+}
+
+func TestTargetedRefreshReturnsBusyAfterBoundedWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
+		t.Cleanup(engine.Close)
+		engine.syncMu.Lock()
+		defer engine.syncMu.Unlock()
+
+		require.ErrorIs(t,
+			engine.SyncSingleSessionForUsageContext(t.Context(), "parent"),
+			ErrSyncInProgress,
+		)
+	})
+}
+
+func TestSubagentRefreshMarksContentionAfterParentAsIncomplete(t *testing.T) {
+	fx := newEngineFixture(t)
+	t.Cleanup(fx.engine.Close)
+	parentPath := fx.writeClaudeSession(t, "proj", "parent.jsonl", "hello")
+	require.NoError(t, fx.engine.SyncPathsContext(t.Context(), []string{parentPath}))
+	fx.appendClaudeMessage(t, parentPath, "changed")
+	childPath := filepath.Join(
+		fx.claudeDir, "proj", "parent", "subagents", "agent-child.jsonl",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(childPath), 0o755))
+	require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser("2024-01-01T00:00:00Z", "child").String()), 0o644))
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	var releaseOnce gosync.Once
+	releaseLock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseLock)
+	fx.engine.emitter = emitterFunc(func(scope string) {
+		if scope != "messages" {
+			return
+		}
+		go func() {
+			lockDone <- fx.engine.RunExclusive(func() error {
+				close(locked)
+				<-release
+				return nil
+			})
+		}()
+		<-locked
+	})
+
+	err := fx.engine.SyncSessionWithSubagentsContext(t.Context(), "parent")
+	require.ErrorIs(t, err, ErrSyncInProgress)
+	require.ErrorIs(t, err, ErrSubagentRefreshIncomplete)
+	assert.Contains(t, err.Error(), "usage aggregate may be incomplete")
+	releaseLock()
+	require.NoError(t, <-lockDone)
+}
+
+func TestTargetedRefreshCancelsLockWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
+		t.Cleanup(engine.Close)
+		engine.syncMu.Lock()
+		defer engine.syncMu.Unlock()
+		ctx, cancel := context.WithCancel(t.Context())
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+		}()
+		require.ErrorIs(t, engine.SyncSessionWithSubagentsContext(ctx, "parent"), context.Canceled)
 	})
 }
 

@@ -1076,6 +1076,12 @@ func (s *Server) humaSyncSession(
 		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
+		if errors.Is(err, syncpkg.ErrSubagentRefreshIncomplete) {
+			return nil, apiError(
+				http.StatusConflict,
+				"another sync or maintenance pass started after the parent refresh, so subagents were skipped and the usage aggregate may be incomplete. Retry after that pass finishes",
+			)
+		}
 		if errors.Is(err, syncpkg.ErrSyncInProgress) {
 			return nil, apiError(http.StatusConflict, "sync or maintenance is already running; retry the session refresh after it finishes")
 		}

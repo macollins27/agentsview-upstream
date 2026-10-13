@@ -218,7 +218,7 @@ func httpSessionUsageData(
 			_, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: true})
 		}
 		if syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
-			fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
+			fmt.Fprintf(os.Stderr, "warning: sync failed: %v; showing stored usage, which may be incomplete\n", syncErr)
 		}
 	}
 	// Request the full breakdown so the remote path matches the

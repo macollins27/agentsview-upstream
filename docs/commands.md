@@ -978,7 +978,8 @@ Restart older daemons after upgrading so they provide the usage progress
 endpoint. Session usage refreshes the named session and its subagents without
 starting or waiting for full startup ingestion. When a stale archive refuses the
 refresh, the command shows stored usage with a warning to run `agentsview resync`.
-A busy sync or maintenance pass also returns stored usage with a warning.
+A busy sync or maintenance pass returns stored usage with a warning that the
+aggregate may be incomplete.
 Unknown IDs return "session not found" and exit 2 until daemon ingestion imports them. `--own-only`
 reads stored usage without a targeted refresh and excludes subagents. Older
 servers skip the refresh with a warning to restart or upgrade. Newer servers

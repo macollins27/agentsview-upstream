@@ -1958,8 +1958,8 @@ func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force, wa
 	stats, tombstoned, err := func() (SyncStats, int, error) {
 		if wait {
 			e.syncMu.Lock()
-		} else if !e.syncMu.TryLock() {
-			return SyncStats{}, 0, ErrSyncInProgress
+		} else if err := e.lockForSessionRefresh(ctx); err != nil {
+			return SyncStats{}, 0, err
 		}
 		defer e.syncMu.Unlock()
 		defer e.clearCurrentProgress()
@@ -4864,6 +4864,29 @@ func (e *Engine) RunExclusive(work func() error) error {
 // ErrSyncInProgress reports that non-blocking foreground sync coordination
 // found another sync or maintenance pass holding the exclusive engine lock.
 var ErrSyncInProgress = errors.New("sync already in progress")
+
+// lockForSessionRefresh waits briefly for watcher writes, then returns busy.
+func (e *Engine) lockForSessionRefresh(ctx context.Context) error {
+	deadline := time.NewTimer(250 * time.Millisecond)
+	defer deadline.Stop()
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if e.syncMu.TryLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return ErrSyncInProgress
+		case <-retry.C:
+		}
+	}
+}
 
 // TryRunExclusive is the non-blocking foreground counterpart to RunExclusive.
 // Background work keeps using RunExclusive so scheduled obligations are not
@@ -20718,6 +20741,19 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 // cancellable git-backed project resolution and database reads on this path.
 func (e *Engine) SyncSingleSessionContext(
 	ctx context.Context, sessionID string,
+) error {
+	return e.syncSingleSessionContext(ctx, sessionID, true)
+}
+
+// SyncSingleSessionForUsageContext bounds lock waiting for a usage refresh.
+func (e *Engine) SyncSingleSessionForUsageContext(
+	ctx context.Context, sessionID string,
+) error {
+	return e.syncSingleSessionContext(ctx, sessionID, false)
+}
+
+func (e *Engine) syncSingleSessionContext(
+	ctx context.Context, sessionID string, wait bool,
 ) (err error) {
 	if e.sourceSyncErr != nil {
 		return e.sourceSyncErr
@@ -20729,8 +20765,10 @@ func (e *Engine) SyncSingleSessionContext(
 		)
 	}
 	ctx = e.parsePolicyContext(ctx)
-	if !e.syncMu.TryLock() {
-		return ErrSyncInProgress
+	if wait {
+		e.syncMu.Lock()
+	} else if err := e.lockForSessionRefresh(ctx); err != nil {
+		return err
 	}
 	preserved := false
 	sessionsChanged := false

@@ -204,6 +204,7 @@ func TestSessionUsageBeforeStartupImportsClaudeChild(t *testing.T) {
 		})
 		assert.Contains(t, stderr, "HTTP 409")
 		assert.Contains(t, stderr, "sync or maintenance is already running")
+		assert.Contains(t, stderr, "showing stored usage, which may be incomplete")
 		return nil
 	}))
 	out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "parent-a"})

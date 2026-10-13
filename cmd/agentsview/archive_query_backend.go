@@ -336,13 +336,13 @@ func (b localArchiveQueryBackend) SessionUsage(
 		})
 		var syncErr error
 		if query.OwnOnly {
-			syncErr = engine.SyncSingleSessionContext(ctx, resolvedID)
+			syncErr = engine.SyncSingleSessionForUsageContext(ctx, resolvedID)
 		} else {
 			syncErr = engine.SyncSessionWithSubagentsContext(ctx, resolvedID)
 		}
 		if syncErr != nil {
 			fmt.Fprintf(os.Stderr,
-				"warning: sync failed: %v\n", syncErr)
+				"warning: sync failed: %v; showing stored usage, which may be incomplete\n", syncErr)
 		}
 		// Flush pending debounced signal recomputes before the
 		// usage query reads the session.
