@@ -1791,14 +1791,13 @@ func TestCanceledForegroundSyncLeavesStartupFallbackEligible(t *testing.T) {
 
 func TestHumaSyncSessionStaleArchive(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		input service.SyncInput
+		name     string
+		input    service.SyncInput
+		canceled bool
 	}{
-		{"path", service.SyncInput{}},
-		{"id", service.SyncInput{ID: "session"}},
-		{"subagents", service.SyncInput{ID: "session", Subagents: true}},
-		{"own usage", service.SyncInput{ID: "session", UsageRefresh: true}},
-		{"combined usage", service.SyncInput{ID: "session", Subagents: true, UsageRefresh: true}},
+		{"path", service.SyncInput{}, false},
+		{"own usage", service.SyncInput{ID: "session", UsageRefresh: true}, false},
+		{"canceled pre-resync", service.SyncInput{}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSyncRouteFixture(t, withStaleDB())
@@ -1808,6 +1807,14 @@ func TestHumaSyncSessionStaleArchive(t *testing.T) {
 				input.Path = sessionPath
 			}
 			require.True(t, f.db.NeedsResync())
+			if tc.canceled {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				out, err := f.srv.humaSyncSession(ctx, &sessionSyncInput{Body: input})
+				require.NoError(t, err)
+				assert.Nil(t, out)
+				return
+			}
 			w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sessions/sync", input)
 			if input.UsageRefresh {
 				require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())

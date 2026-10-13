@@ -401,6 +401,11 @@ func TestCursorS3SubagentRoot(t *testing.T) {
 	assert.Equal(t, root+"/"+filepath.ToSlash(SubagentTranscriptRoot(AgentCursor, localChild)), SubagentTranscriptRoot(AgentCursor, child))
 	assert.Equal(t, root, CursorS3SourceRoot(root+"/project/parent.jsonl", root))
 	assert.Equal(t, project+"parent/subagents", CursorS3SubagentRoot(root, root+"/project/parent.jsonl"))
+	markerParent := project + "agent-transcripts/agent-transcripts.jsonl"
+	markerChild := project + "agent-transcripts/subagents/child.jsonl"
+	assert.Equal(t, root, CursorS3SourceRoot(markerParent))
+	assert.Equal(t, root, CursorS3SourceRoot(markerChild))
+	assert.Equal(t, project+"agent-transcripts/subagents", SubagentTranscriptRoot(AgentCursor, markerParent))
 }
 
 func TestDiscoverCursorS3SubagentPaths(t *testing.T) {
@@ -429,13 +434,4 @@ func TestDiscoverCursorS3SubagentPaths(t *testing.T) {
 		project + "child/subagents":             {project + "child/subagents/grandchild.jsonl"},
 		project + "agent-transcripts/subagents": {project + "agent-transcripts/subagents/marker-child.jsonl"},
 	}, paths)
-}
-
-func TestCursorS3SourceRootWithMarkerNamedParent(t *testing.T) {
-	const root = "s3://bucket/host-a/raw/cursor"
-	const parent = root + "/project/agent-transcripts/agent-transcripts/agent-transcripts.jsonl"
-	const child = root + "/project/agent-transcripts/agent-transcripts/subagents/child.jsonl"
-	assert.Equal(t, root, CursorS3SourceRoot(parent))
-	assert.Equal(t, root, CursorS3SourceRoot(child))
-	assert.Equal(t, root+"/project/agent-transcripts/agent-transcripts/subagents", SubagentTranscriptRoot(AgentCursor, parent))
 }

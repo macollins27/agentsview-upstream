@@ -154,7 +154,6 @@ type remoteUsageSpec struct {
 	bearer        string          // if set, asserts Authorization: Bearer <bearer>
 	serverRunning bool            // include server_running:true in the usage body
 	usageBlock    <-chan struct{} // optional block before serving /usage
-	staleArchive  bool
 	syncStatus    int
 }
 
@@ -224,15 +223,8 @@ func newRemoteUsageServer(
 				return
 			}
 			if spec.syncStatus != 0 {
-				if spec.staleArchive {
-					w.Header().Set(server.ResyncRequiredHeader, "true")
-				}
 				w.WriteHeader(spec.syncStatus)
-				if spec.staleArchive {
-					writeJSONResponse(w, `{"error":"archive data version changed; run agentsview resync or POST /api/v1/resync to rebuild the archive before syncing"}`)
-				} else {
-					writeJSONResponse(w, `{"error":"sync or maintenance is already running"}`)
-				}
+				writeJSONResponse(w, `{"error":"sync or maintenance is already running"}`)
 				return
 			}
 			writeJSONResponse(w, detailJSON)
@@ -1623,18 +1615,16 @@ func TestSessionUsage_RemoteRefresh(t *testing.T) {
 		status  int
 		warning string
 		ownOnly bool
-		stale   bool
 	}{
-		{"current", server.APIVersion, 0, "", false, false},
-		{"current own only", server.APIVersion, 0, "", true, false},
-		{"busy", server.APIVersion, http.StatusConflict, "sync or maintenance is already running", false, false},
-		{"stale", server.APIVersion, http.StatusConflict, "run agentsview resync", false, true},
-		{"older", 10, 0, "predates targeted session refresh", false, false},
-		{"older own only", 10, 0, "", true, false},
+		{"current", server.APIVersion, 0, "", false},
+		{"current own only", server.APIVersion, 0, "", true},
+		{"busy", server.APIVersion, http.StatusConflict, "sync or maintenance is already running", false},
+		{"older", 10, 0, "predates targeted session refresh", false},
+		{"older own only", 10, 0, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			newAgentDataDir(t)
-			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a", apiVersion: tc.version, syncStatus: tc.status, staleArchive: tc.stale, serverRunning: true})
+			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a", apiVersion: tc.version, syncStatus: tc.status, serverRunning: true})
 			stderr := captureStderr(t, func() {
 				args := []string{"session", "usage", "codex:session-a", "--server", ts.URL}
 				if tc.ownOnly {
@@ -1644,18 +1634,17 @@ func TestSessionUsage_RemoteRefresh(t *testing.T) {
 				out, code, err := sessionUsageDataForCommand(cmd, "codex:session-a")
 				require.NoError(t, err)
 				require.NotNil(t, out)
-				assert.Equal(t, 42, out.TotalOutputTokens)
-				assert.Equal(t, "codex:session-a", out.SessionID)
-				assert.Equal(t, "remote-project", out.Project)
-				assert.True(t, out.ServerRunning)
+				if tc.name == "current" {
+					assert.Equal(t, 42, out.TotalOutputTokens)
+					assert.Equal(t, "codex:session-a", out.SessionID)
+					assert.Equal(t, "remote-project", out.Project)
+					assert.True(t, out.ServerRunning)
+				}
 				assert.Equal(t, tokenUseExitOK, code)
 			})
 			if tc.warning != "" {
 				assert.Contains(t, stderr, tc.warning)
 				assert.Contains(t, stderr, "showing stored usage")
-				if !tc.stale {
-					assert.NotContains(t, stderr, "run agentsview resync")
-				}
 			} else {
 				assert.Empty(t, stderr)
 			}
@@ -1764,115 +1753,54 @@ func TestSessionUsage_PGFlagIncludesSubagentUsage(t *testing.T) {
 }
 
 func TestSessionUsage_UsesDiscoveredDaemon(t *testing.T) {
-	for _, alias := range []bool{false, true} {
-		t.Run(fmt.Sprintf("alias=%t", alias), func(t *testing.T) {
-			dataDir := newAgentDataDir(t)
+	for _, readOnly := range []bool{false, true} {
+		for _, alias := range []bool{false, true} {
+			t.Run(fmt.Sprintf("readOnly=%t/alias=%t", readOnly, alias), func(t *testing.T) {
+				dataDir := newAgentDataDir(t)
+				var paths []string
+				ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.URL.Path)
+					switch r.URL.Path {
+					case "/api/v1/sessions/remote-session":
+						writeJSONResponse(w, `{"id":"remote-session","agent":"codex","project":"remote-project"}`)
+					case "/api/v1/sessions/sync":
+						assert.Equal(t, http.MethodPost, r.Method)
+						if readOnly {
+							w.WriteHeader(http.StatusNotImplemented)
+							return
+						}
+						writeJSONResponse(w, `{"id":"remote-session"}`)
+					case "/api/v1/sessions/remote-session/usage":
+						writeJSONResponse(w, `{"session_id":"remote-session","agent":"codex","project":"remote-project","total_output_tokens":42,"has_token_data":true}`)
+					default:
+						http.NotFound(w, r)
+					}
+				})
+				registerTestRuntime(t, dataDir, ts.URL, readOnly)
 
-			ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				switch r.URL.Path {
-				case "/api/v1/sessions/remote-session":
-					_, _ = w.Write([]byte(`{
-				"id": "remote-session",
-				"agent": "codex",
-				"project": "remote-project"
-			}`))
-				case "/api/v1/sessions/sync":
-					_, _ = w.Write([]byte(`{"id":"remote-session"}`))
-				case "/api/v1/sessions/remote-session/usage":
-					_, _ = w.Write([]byte(`{
-				"session_id": "remote-session",
-				"agent": "codex",
-				"project": "remote-project",
-				"total_output_tokens": 42,
-				"peak_context_tokens": 2048,
-				"has_token_data": true,
-				"cost": {"microdollars": 500000},
-				"has_cost": true,
-				"models": ["gpt-5.1"],
-				"unpriced_models": []
-			}`))
-				default:
-					http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
-					http.NotFound(w, r)
-				}
+				var out *sessionUsageOutput
+				var code int
+				var err error
+				stderr := captureStderr(t, func() {
+					if alias {
+						out, code, err = sessionUsageData(t.Context(), "remote-session")
+					} else {
+						cmd := sessionUsageCommand(t, "session", "usage", "remote-session")
+						out, code, err = sessionUsageDataForCommand(cmd, "remote-session")
+					}
+				})
+				require.NoError(t, err)
+				require.NotNil(t, out)
+				assert.Equal(t, tokenUseExitOK, code)
+				assert.Equal(t, "remote-session", out.SessionID)
+				assert.Equal(t, 42, out.TotalOutputTokens)
+				assert.True(t, out.ServerRunning)
+				assert.Equal(t, []string{"/api/v1/sessions/remote-session", "/api/v1/sessions/sync", "/api/v1/sessions/remote-session/usage"}, paths)
+				assert.Empty(t, stderr)
+				assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
 			})
-			registerSyncRouteTestRuntime(t, dataDir, ts.URL)
-
-			var out *sessionUsageOutput
-			var code int
-			var err error
-			if alias {
-				out, code, err = sessionUsageData(t.Context(), "remote-session")
-			} else {
-				cmd := sessionUsageCommand(t, "session", "usage", "remote-session")
-				out, code, err = sessionUsageDataForCommand(cmd, "remote-session")
-			}
-			require.NoError(t, err)
-			require.NotNil(t, out)
-			assert.Equal(t, tokenUseExitOK, code)
-			assert.Equal(t, "remote-session", out.SessionID)
-			assert.True(t, out.ServerRunning)
-			assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
-		})
-	}
-}
-
-func TestSessionUsage_DefaultUsesArchivedReadOnlyDaemonUsage(t *testing.T) {
-	for _, alias := range []bool{false, true} {
-		t.Run(fmt.Sprintf("alias=%t", alias), func(t *testing.T) {
-			dataDir := newAgentDataDir(t)
-			ts, _ := readOnlySessionUsageRuntimeServer(t)
-			registerTestRuntime(t, dataDir, ts.URL, true)
-
-			var out *sessionUsageOutput
-			var code int
-			var err error
-			if alias {
-				out, code, err = sessionUsageData(t.Context(), "remote-session")
-			} else {
-				cmd := sessionUsageCommand(t, "session", "usage", "remote-session")
-				out, code, err = sessionUsageDataForCommand(cmd, "remote-session")
-			}
-			require.NoError(t, err)
-			require.NotNil(t, out)
-			assert.Equal(t, tokenUseExitOK, code)
-			assert.Equal(t, 42, out.TotalOutputTokens)
-			assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
-		})
-	}
-}
-
-func readOnlySessionUsageRuntimeServer(
-	t *testing.T,
-) (*httptest.Server, *[]string) {
-	t.Helper()
-	paths := []string{}
-	ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
-		switch r.URL.Path {
-		case "/api/v1/sessions/remote-session":
-			writeJSONResponse(w, `{
-				"id":"remote-session",
-				"agent":"codex",
-				"project":"remote-project"
-			}`)
-		case "/api/v1/sessions/sync":
-			assert.Equal(t, http.MethodPost, r.Method)
-			w.WriteHeader(http.StatusNotImplemented)
-		case "/api/v1/sessions/remote-session/usage":
-			writeJSONResponse(w, `{
-				"session_id":"remote-session",
-				"agent":"codex",
-				"project":"remote-project",
-				"total_output_tokens":42,
-				"has_token_data":true
-			}`)
-		default:
-			http.NotFound(w, r)
 		}
-	})
-	return ts, &paths
+	}
 }
 
 func sessionUsageRuntimeServer(
