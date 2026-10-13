@@ -10182,6 +10182,57 @@ func TestTargetedRefreshLockWait(t *testing.T) {
 	}
 }
 
+func TestSubagentRefreshClaudeLayoutDiscovery(t *testing.T) {
+	for _, agent := range []parser.AgentType{parser.AgentClaude, parser.AgentIcodemate, parser.AgentQoder, parser.AgentOpenClaude} {
+		t.Run(string(agent), func(t *testing.T) {
+			root := t.TempDir()
+			database := openTestDB(t)
+			engine := NewEngine(t.Context(), database, EngineConfig{AgentDirs: map[parser.AgentType][]string{agent: {root}}, Machine: "local", DeferStartupMaintenance: true})
+			t.Cleanup(engine.Close)
+			const parentRawID = "11111111-1111-4111-8111-111111111111"
+			const timestamp = "2026-01-01T00:00:00Z"
+			content := testjsonl.NewSessionBuilder().AddClaudeUserWithSessionID(timestamp, "task", parentRawID).AddClaudeAssistant(timestamp, "answer").String()
+			parentPath := filepath.Join(root, "project", parentRawID+".jsonl")
+			require.NoError(t, os.MkdirAll(filepath.Dir(parentPath), 0o755))
+			require.NoError(t, os.WriteFile(parentPath, []byte(content), 0o600))
+			require.NoError(t, engine.SyncPathsContext(t.Context(), []string{parentPath}))
+			ids, err := database.ListSessionIDsByFilePath(t.Context(), parentPath, string(agent))
+			require.NoError(t, err)
+			require.Len(t, ids, 1)
+			parentID := ids[0]
+			childDir := filepath.Join(root, "project", parentRawID, "subagents")
+			require.NoError(t, os.MkdirAll(childDir, 0o755))
+			var childPaths []string
+			for i := range 3 {
+				path := filepath.Join(childDir, fmt.Sprintf("agent-child-%d.jsonl", i))
+				require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+				childPaths = append(childPaths, path)
+			}
+			oldPaths := subagentTranscriptPaths
+			t.Cleanup(func() { subagentTranscriptPaths = oldPaths })
+			enumerations := 0
+			subagentTranscriptPaths = func(path string) []string {
+				enumerations++
+				return oldPaths(path)
+			}
+			require.False(t, engine.StartupReconciled())
+			require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))
+			assert.Equal(t, 1, enumerations)
+			for _, path := range childPaths {
+				ids, err := database.ListSessionIDsByFilePath(t.Context(), path, string(agent))
+				require.NoError(t, err)
+				require.Len(t, ids, 1)
+				child, err := database.GetSession(t.Context(), ids[0])
+				require.NoError(t, err)
+				require.NotNil(t, child)
+				assert.Equal(t, string(agent), child.Agent)
+				require.NotNil(t, child.ParentSessionID)
+				assert.Equal(t, parentID, *child.ParentSessionID)
+			}
+		})
+	}
+}
+
 func TestSubagentRefreshMarksContentionAfterParentAsIncomplete(t *testing.T) {
 	for _, agent := range []parser.AgentType{parser.AgentClaude, parser.AgentCodex} {
 		t.Run(string(agent), func(t *testing.T) {

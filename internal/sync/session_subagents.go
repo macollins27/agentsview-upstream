@@ -20,6 +20,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 	var refreshErr error
 	seenIDs := make(map[string]bool)
 	attemptedPaths := make(map[string]bool)
+	discoveredRoots := make(map[string]bool)
 	queue := []string{sessionID}
 	for len(queue) > 0 {
 		if err := ctx.Err(); err != nil {
@@ -57,10 +58,11 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		if def, ok := parser.AgentByPrefix(id); ok {
 			agent = def.Type
 		}
-		if agent == parser.AgentClaude {
-			if path == "" {
-				path = e.db.GetSessionFilePath(ctx, id)
-			}
+		if path == "" {
+			path = e.db.GetSessionFilePath(ctx, id)
+		}
+		if root := parser.ClaudeSubagentTranscriptRoot(path); root != "" && !discoveredRoots[root] {
+			discoveredRoots[root] = true
 			var paths []string
 			for _, childPath := range subagentTranscriptPaths(path) {
 				if !attemptedPaths[childPath] {
