@@ -118,7 +118,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 			}
 			refreshErr = errors.Join(refreshErr, err)
 			for _, childPath := range discovered {
-				if childRoot := parser.SubagentTranscriptRoot(agent, childPath); childRoot != "" && samePathOrDescendant(childRoot, root) {
+				if childRoot := parser.SubagentTranscriptRoot(agent, childPath); childRoot != "" && (agent == parser.AgentShelley || samePathOrDescendant(childRoot, root)) {
 					discoveredRoots[childRoot] = true
 				}
 				if !attemptedPaths[childPath] {

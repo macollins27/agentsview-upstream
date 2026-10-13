@@ -15,6 +15,7 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -198,6 +199,32 @@ func TestSyncSingleSessionShelleyUsesVirtualSourcePath(t *testing.T) {
 	assert.Equal(t, "app", sess.Project, "project")
 	assert.Equal(t, dbPath+"#cMAIN1",
 		database.GetSessionFilePath(t.Context(), "shelley:cMAIN1"), "stored file path")
+}
+
+func TestSyncSessionWithSubagentsDiscoversShelleyChildrenBeforeStartupSync(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := createShelleyMainDB(t, dir)
+	engine, database := newShelleyEngine(t, dir)
+	require.NoError(t, engine.SyncSingleSession("shelley:cMAIN1"))
+
+	for _, conv := range []struct{ id, parent string }{
+		{"child", "cMAIN1"},
+		{"grandchild", "child"},
+		{"unrelated", ""},
+	} {
+		seedShelleyConvo(t, dbPath, conv.id, conv.id, "/workspace/project-a",
+			"claude-sonnet-4-6", conv.parent, false,
+			"2026-06-15T10:00:00Z", "2026-06-15T10:00:06Z", mainConvoMsgs())
+	}
+
+	require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), "shelley:cMAIN1"))
+	usage, err := service.SessionUsageWithSubagents(t.Context(), database, "shelley:cMAIN1", true)
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	assert.Equal(t, 150, usage.TotalOutputTokens)
+	unrelated, err := database.GetSession(t.Context(), "shelley:unrelated")
+	require.NoError(t, err)
+	assert.Nil(t, unrelated)
 }
 
 func TestSyncSingleSessionShelleyForceRewritesUnchangedSession(t *testing.T) {

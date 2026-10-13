@@ -15,6 +15,11 @@ func SubagentTranscriptRoot(agent AgentType, sessionPath string) string {
 	switch agent {
 	case AgentCodex, AgentTraeX, AgentAugureCode:
 		return ""
+	case AgentShelley:
+		if _, _, ok := parseShelleyVirtualPath(sessionPath); ok {
+			return sessionPath
+		}
+		return ""
 	case AgentPositAssistant:
 		return filepath.Join(filepath.Dir(sessionPath), positAssistantSubagentsDir)
 	case AgentPi, AgentOMP, AgentOMO, AgentStepCode:
@@ -55,6 +60,39 @@ func SubagentTranscriptPaths(ctx context.Context, agent AgentType, sessionPath s
 		return nil, nil
 	}
 	switch agent {
+	case AgentShelley:
+		dbPath, parentID, _ := parseShelleyVirtualPath(sessionPath)
+		conn, err := OpenShelleyDB(dbPath)
+		if err != nil {
+			return nil, err
+		}
+		defer conn.Close()
+		rows, err := conn.QueryContext(ctx,
+			`WITH RECURSIVE parents AS MATERIALIZED (
+				SELECT conversation_id AS id, TRIM(parent_conversation_id) AS parent FROM conversations
+			), descendants(id) AS (
+				SELECT id FROM parents WHERE parent = ?
+				UNION
+				SELECT c.id FROM parents c JOIN descendants d ON c.parent = d.id
+			)
+			SELECT id FROM descendants ORDER BY id`,
+			parentID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var paths []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			if IsValidSessionID(id) {
+				paths = append(paths, ShelleyVirtualPath(dbPath, id))
+			}
+		}
+		return paths, rows.Err()
 	case AgentPositAssistant:
 		var sources []SourceRef
 		positAssistantSourceSet{}.collectConversationSources("", filepath.Dir(sessionPath), "", "", &sources, make(map[string]struct{}))
