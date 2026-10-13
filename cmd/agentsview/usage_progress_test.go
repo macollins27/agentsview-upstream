@@ -435,7 +435,8 @@ func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
 					write(parent, parentMeta, 10, child)
 				}
 				wantOutput, wantChildren := 52, 1
-				if state == "missing intermediate" || state == "restored child" || state == "missing spawner" {
+				switch state {
+				case "missing intermediate", "restored child", "missing spawner":
 					require.NoError(t, database.BaselineActiveSessionSourceOwnerships(t.Context(), []db.SessionSourceOwnership{{ID: id(child), Machine: "local", Agent: string(agent), FilePath: childPath}}))
 					marked, err := database.MarkSessionSourceMissing(t.Context(), "local", string(agent), id(child), childPath)
 					require.NoError(t, err)
@@ -447,11 +448,11 @@ func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
 						write(grandchild, grandchildMeta, 42, "")
 						wantOutput, wantChildren = 53, 2
 					}
-				} else if state == "metadata spawn" || state == "imported grandchild" {
+				case "metadata spawn", "imported grandchild":
 					write(child, childMeta, 1, grandchild)
 					write(grandchild, grandchildMeta, 42, "")
 					wantOutput, wantChildren = 53, 2
-				} else {
+				default:
 					write(child, childMeta, 42, "")
 				}
 				if state == "trashed child" || state == "excluded child" {
