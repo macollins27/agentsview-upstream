@@ -146,16 +146,15 @@ func forbidPGReadStore(t *testing.T) {
 // remoteUsageSpec configures newRemoteUsageServer. Zero values fall back to
 // the common defaults (codex agent, remote-project, 42 output tokens).
 type remoteUsageSpec struct {
-	canonicalID    string          // id whose detail and usage routes return 200
-	apiVersion     int             // defaults to the current server API version
-	agent          string          // defaults to "codex"
-	project        string          // defaults to "remote-project"
-	outputTokens   int             // defaults to 42
-	bearer         string          // if set, asserts Authorization: Bearer <bearer>
-	serverRunning  bool            // include server_running:true in the usage body
-	usageBlock     <-chan struct{} // optional block before serving /usage
-	syncStatus     int
-	startupPending bool
+	canonicalID   string          // id whose detail and usage routes return 200
+	apiVersion    int             // defaults to the current server API version
+	agent         string          // defaults to "codex"
+	project       string          // defaults to "remote-project"
+	outputTokens  int             // defaults to 42
+	bearer        string          // if set, asserts Authorization: Bearer <bearer>
+	serverRunning bool            // include server_running:true in the usage body
+	usageBlock    <-chan struct{} // optional block before serving /usage
+	syncStatus    int
 }
 
 // remoteUsageRequests records what the fake usage server observed.
@@ -224,13 +223,9 @@ func newRemoteUsageServer(
 				return
 			}
 			if spec.syncStatus != 0 {
-				if spec.startupPending {
-					w.Header().Set(service.StartupPendingHeader, "true")
-				} else {
-					w.Header().Set(server.ResyncRequiredHeader, "true")
-				}
+				w.Header().Set(server.ResyncRequiredHeader, "true")
 				w.WriteHeader(spec.syncStatus)
-				writeJSONResponse(w, `{"detail":"archive requires a full resync"}`)
+				writeJSONResponse(w, `{"error":"archive data version changed; run agentsview resync or POST /api/v1/resync to rebuild the archive before syncing"}`)
 				return
 			}
 			writeJSONResponse(w, detailJSON)
@@ -1648,6 +1643,7 @@ func TestSessionUsage_StaleArchiveReturnsStoredUsage(t *testing.T) {
 		assert.Equal(t, 42, out.TotalOutputTokens)
 	})
 	assert.Contains(t, stderr, "warning: sync failed:")
+	assert.Contains(t, stderr, "run agentsview resync")
 	assert.Equal(t, "codex:session-a", reqs.SyncInput.ID)
 	assert.True(t, reqs.SyncInput.Subagents)
 	assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
@@ -1683,22 +1679,26 @@ func TestSessionUsage_MissingSessionDoesNotSync(t *testing.T) {
 	assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
 }
 
-func TestSessionUsage_StartupPendingReturnsStoredUsage(t *testing.T) {
-	ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{
-		canonicalID: "codex:session-a", syncStatus: http.StatusConflict, startupPending: true,
-	})
-	backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL, Runtime: daemonRuntimeFromTestURL(t, ts.URL)}}
-	stderr := captureStderr(t, func() {
-		out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:session-a"})
-		require.NoError(t, err)
-		require.NotNil(t, out)
-		assert.Equal(t, tokenUseExitOK, code)
-		assert.Equal(t, 42, out.TotalOutputTokens)
-	})
-	assert.Contains(t, stderr, "warning: startup ingestion is pending; showing stored usage")
-	assert.NotContains(t, stderr, "sync failed")
-	assert.True(t, reqs.SyncInput.Subagents)
-	assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
+func TestSessionUsage_NewerServerSkipsRefresh(t *testing.T) {
+	for _, runtime := range []bool{false, true} {
+		t.Run(strconv.FormatBool(runtime), func(t *testing.T) {
+			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a", apiVersion: server.APIVersion + 1})
+			tr := transport{URL: ts.URL}
+			if runtime {
+				tr.Runtime = &DaemonRuntime{API: server.APIVersion + 1}
+			}
+			stderr := captureStderr(t, func() {
+				out, code, err := httpSessionUsageData(t.Context(), tr, "", sessionUsageQuery{SessionID: "codex:session-a"})
+				require.NoError(t, err)
+				require.NotNil(t, out)
+				assert.Equal(t, tokenUseExitOK, code)
+				assert.Equal(t, 42, out.TotalOutputTokens)
+			})
+			assert.Contains(t, stderr, "is newer than this client; upgrade agentsview")
+			assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
+			assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
+		})
+	}
 }
 
 // seedSubagentOnlyUsage seeds a parent session with no usage of its own and

@@ -130,7 +130,7 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 					assert.Equal(t, tokenUseExitNotFound, code)
 				}
 				assert.Zero(t, startupCalls)
-				assert.False(t, engine.StartupAttemptFinished())
+				assert.False(t, engine.StartupReconciled())
 			} else {
 				_, err := fresh.DailyUsage(t.Context(), dailyUsageQuery{})
 				require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 	}
 }
 
-func TestSessionUsageAfterDeferredStartupImportsClaudeChild(t *testing.T) {
+func TestSessionUsageBeforeStartupImportsClaudeChild(t *testing.T) {
 	cfg := testConfigWithClaudeFixture(t)
 	claudeDir := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj0")
 	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
@@ -169,7 +169,7 @@ func TestSessionUsageAfterDeferredStartupImportsClaudeChild(t *testing.T) {
 	t.Cleanup(engine.Close)
 	_, err := service.NewDirectBackend(database, engine).Sync(t.Context(), service.SyncInput{Path: parentPath})
 	require.NoError(t, err)
-	engine.RecordStartupReconciled(agentsync.SyncStats{Deferred: 1}, nil)
+	require.False(t, engine.StartupReconciled())
 	ts := httptest.NewUnstartedServer(nil)
 	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
 	srv := server.New(cfg, database, engine)

@@ -643,9 +643,9 @@ workflow also:
 - **Reads committed archive data** — daily reports can run while the daemon
   imports new source changes. Run `agentsview sync` first when those changes
   must be included. Session usage refreshes the named session and its subagents.
-  While startup ingestion is pending, or when the archive is stale, session
-  usage returns stored usage with a warning. Unknown IDs return "session not
-  found" until ingestion imports them. Statusline waits for startup ingestion.
+  Session usage skips full startup ingestion. Stale archives return stored usage
+  with a warning to run `agentsview resync`. Unknown IDs return "session not found"
+  until ingestion imports them. Statusline waits for startup ingestion.
 
 ## `agentsview usage daily`
 
@@ -1067,13 +1067,13 @@ archive with a stale warning; scoped upgrades and schema repairs finish before
 the daemon serves requests.
 
 `session usage` and `token-use` refresh the named session and its subagents.
-While the first startup attempt is pending, or when a stale archive refuses the
-refresh, the command shows stored usage with a warning. Unknown IDs return
-"session not found" and exit 2 until daemon ingestion imports them. `--own-only`
+These commands skip full startup ingestion. When a stale archive refuses the
+refresh, they show stored usage with a warning to run `agentsview resync`.
+Unknown IDs return "session not found" and exit 2 until daemon ingestion imports them. `--own-only`
 excludes subagents. HTTP/daemon queries with `--own-only` read stored usage
 without refreshing; direct queries without a daemon refresh the named
 transcript. Older servers skip the refresh with a warning to restart or upgrade.
-Statusline still waits.
+Newer servers skip refresh until the client is upgraded. Statusline still waits.
 
 `--no-sync` skips source refresh and starts any new daemon without automatic
 sync. It does not disable sync on an already-running daemon. `--offline` reads

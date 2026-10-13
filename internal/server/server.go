@@ -76,7 +76,7 @@ const (
 		service.SemanticSearchIntentHeader + ", " + rawSyncDeviceIDHeader +
 		", " + rawSyncUploadOffsetHeader
 	corsExposedResponseHeaders = rawSyncUploadOffsetHeader + ", " +
-		rawSyncUploadLengthHeader + ", " + rawSyncUploadCompleteHeader + ", Location, " + apiclient.ArchiveStaleHeader + ", " + service.StartupPendingHeader
+		rawSyncUploadLengthHeader + ", " + rawSyncUploadCompleteHeader + ", Location, " + apiclient.ArchiveStaleHeader
 )
 
 // Server is the HTTP server that serves the SPA and REST API.

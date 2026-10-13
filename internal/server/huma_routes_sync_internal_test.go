@@ -1811,39 +1811,6 @@ func TestHumaSyncSessionLocalNoSyncRejectsStaleDB(t *testing.T) {
 	assert.Nil(t, session)
 }
 
-func TestHumaSyncSessionSubagentsStartupAttempt(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		stats syncpkg.SyncStats
-		err   error
-	}{
-		{name: "success"},
-		{name: "deferred", stats: syncpkg.SyncStats{Deferred: 1}},
-		{name: "failed", err: errors.New("startup failed")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newSyncRouteFixture(t)
-			path := f.writeClaudeSession(t, "proj/session.jsonl", "startup gate")
-			require.Equal(t, http.StatusOK, postSessionSync(t, f.handler, path).Code)
-			engine := syncpkg.NewEngine(t.Context(), f.db, syncpkg.EngineConfig{
-				AgentDirs: f.srv.cfg.AgentDirs, Machine: "local", DeferStartupMaintenance: true,
-			})
-			t.Cleanup(engine.Close)
-			f.srv.engine = engine
-			f.srv.sessions = service.NewDirectBackend(f.db, engine)
-			input := service.SyncInput{ID: "session", Subagents: true}
-			w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sessions/sync", input)
-			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
-			assert.Equal(t, "true", w.Header().Get(service.StartupPendingHeader))
-			assert.Empty(t, w.Header().Get(ResyncRequiredHeader))
-			engine.RecordStartupReconciled(tc.stats, tc.err)
-			w = serveJSON(t, f.handler, http.MethodPost, "/api/v1/sessions/sync", input)
-			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-			assert.Empty(t, w.Header().Get(service.StartupPendingHeader))
-		})
-	}
-}
-
 func TestHumaSyncSessionCanceledPreResyncReturnsNil(t *testing.T) {
 	f := newSyncRouteFixture(t, withStaleDB())
 	require.True(t, f.db.NeedsResync())

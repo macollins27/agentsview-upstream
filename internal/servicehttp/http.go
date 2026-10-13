@@ -536,9 +536,6 @@ func (b *httpBackend) Sync(
 	if response.StatusCode == http.StatusNotImplemented {
 		return nil, fmt.Errorf("sync: daemon at %s: %w", b.baseURL, db.ErrReadOnly)
 	}
-	if response.StatusCode == http.StatusConflict && response.HTTPResponse.Header.Get(service.StartupPendingHeader) == "true" {
-		return nil, service.ErrStartupPending
-	}
 	if err := serviceResponseError(response.HTTPResponse, response.Body, err); err != nil {
 		return nil, err
 	}

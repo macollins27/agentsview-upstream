@@ -3903,28 +3903,17 @@ func TestStartupMaintenanceWaitsForForegroundSyncAndSerializesLaterSyncs(
 	require.NoError(t, <-laterSyncDone)
 }
 
-func TestStartupAttemptFinished(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		stats SyncStats
-		err   error
-	}{
-		{name: "success"},
-		{name: "deferred", stats: SyncStats{Deferred: 1}},
-		{name: "failed", err: errors.New("startup failed")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local", DeferStartupMaintenance: true})
-			t.Cleanup(engine.Close)
-			assert.False(t, engine.StartupAttemptFinished())
-			engine.RecordStartupReconciled(tc.stats, tc.err)
-			assert.True(t, engine.StartupAttemptFinished())
-			assert.Equal(t, tc.name == "success", engine.StartupReconciled())
-			engine.RecordStartupReconciled(SyncStats{}, nil)
-			assert.True(t, engine.StartupAttemptFinished())
-			assert.True(t, engine.StartupReconciled())
-		})
-	}
+func TestDeferredStartupPassDoesNotAcknowledgeReconciliation(t *testing.T) {
+	database := openTestDB(t)
+	engine := NewEngine(t.Context(), database, EngineConfig{
+		Machine:                 "local",
+		DeferStartupMaintenance: true,
+	})
+	t.Cleanup(engine.Close)
+
+	engine.RecordStartupReconciled(SyncStats{Deferred: 1}, nil)
+
+	assert.False(t, engine.StartupReconciled())
 }
 
 func TestStartupSyncFallbackRunsWhenForegroundSyncNeverArrives(t *testing.T) {

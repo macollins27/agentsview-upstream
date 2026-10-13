@@ -330,9 +330,7 @@ func (s *Server) runSyncWhenReady(
 	}
 }
 
-// ResyncRequiredHeader marks a /sync rejection that requires a full resync, so
-// the CLI can retry through /api/v1/resync instead of surfacing a raw HTTP
-// error. The body remains the human-readable explanation.
+// ResyncRequiredHeader marks a rejected sync that requires a full archive rebuild.
 const ResyncRequiredHeader = "X-Agentsview-Resync-Required"
 
 func (s *Server) archiveStale() bool {
@@ -349,7 +347,7 @@ func (s *Server) rejectStaleArchiveForSync() error {
 	return huma.ErrorWithHeaders(
 		apiError(
 			http.StatusConflict,
-			"archive data version changed; POST /api/v1/resync to rebuild the "+
+			"archive data version changed; run agentsview resync or POST /api/v1/resync to rebuild the "+
 				"archive before syncing",
 		),
 		http.Header{ResyncRequiredHeader: []string{"true"}},
@@ -1066,12 +1064,6 @@ func (s *Server) humaSyncSession(
 	}
 	if err := s.rejectStaleArchiveForSync(); err != nil {
 		return nil, err
-	}
-	if in.Body.Subagents && s.engine != nil && !s.engine.StartupAttemptFinished() {
-		return nil, huma.ErrorWithHeaders(
-			apiError(http.StatusConflict, service.ErrStartupPending.Error()),
-			http.Header{service.StartupPendingHeader: []string{"true"}},
-		)
 	}
 	detail, err := s.sessionSyncService(ctx).Sync(ctx, in.Body)
 	if err != nil {

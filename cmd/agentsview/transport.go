@@ -82,7 +82,6 @@ type transport struct {
 	DirectReason       string
 	DirectError        error
 	Runtime            *DaemonRuntime
-	StartedDaemon      bool
 }
 
 type customPricingStore interface {
@@ -285,7 +284,6 @@ func ensureTransportContext(
 				return transport{}, err
 			}
 			tr = transportFromRuntime(rt)
-			tr.StartedDaemon = true
 			return tr, nil
 		}
 		return tr, nil
@@ -310,7 +308,6 @@ func ensureTransportContext(
 				return transport{}, err
 			}
 			tr = transportFromRuntime(rt)
-			tr.StartedDaemon = true
 			return tr, nil
 		}
 	}
@@ -342,7 +339,6 @@ func ensureTransportContext(
 			return transport{}, err
 		}
 		tr = transportFromRuntime(rt)
-		tr.StartedDaemon = true
 		return tr, nil
 	}
 	if daemonAutostartDisabled() {
@@ -378,7 +374,6 @@ func ensureTransportContext(
 		return transport{}, err
 	}
 	tr = transportFromRuntime(rt)
-	tr.StartedDaemon = true
 	return tr, nil
 }
 

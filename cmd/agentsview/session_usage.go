@@ -211,12 +211,13 @@ func httpSessionUsageData(
 		if syncErr == nil && apiVersion < server.TargetedSessionSyncAPIVersion {
 			syncErr = fmt.Errorf("server API version %d predates targeted session refresh; run agentsview daemon restart or upgrade the server", apiVersion)
 		}
+		if syncErr == nil && apiVersion > server.APIVersion {
+			syncErr = fmt.Errorf("server API version %d is newer than this client; upgrade agentsview before refreshing sessions", apiVersion)
+		}
 		if syncErr == nil {
 			_, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: true})
 		}
-		if errors.Is(syncErr, service.ErrStartupPending) {
-			fmt.Fprintln(os.Stderr, "warning: startup ingestion is pending; showing stored usage")
-		} else if syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
+		if syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
 			fmt.Fprintf(os.Stderr, "warning: sync failed: %v\n", syncErr)
 		}
 	}
