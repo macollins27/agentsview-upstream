@@ -388,3 +388,38 @@ func TestCursorS3ProviderRejectsNonTranscriptLayout(t *testing.T) {
 		[]string{"demo-proj", "logs", "trace.txt"},
 	))
 }
+
+func TestCursorS3SubagentTranscriptPaths(t *testing.T) {
+	const root = "s3://bucket/host-a/raw/cursor"
+	const project = root + "/project/agent-transcripts/"
+	for _, canonical := range []bool{false, true} {
+		name := "subagent"
+		if canonical {
+			name = "canonical source"
+		}
+		t.Run(name, func(t *testing.T) {
+			parent := project + "parent/parent.jsonl"
+			child := project + "parent/subagents/child.jsonl"
+			oldList := listS3Objects
+			t.Cleanup(func() { listS3Objects = oldList })
+			listS3Objects = func(got string) ([]S3Object, error) {
+				require.Equal(t, root, got)
+				objects := []S3Object{{URI: parent}, {URI: child}, {URI: project + "parent/subagents/child.txt"}, {URI: project + "other/subagents/unrelated.jsonl"}}
+				if canonical {
+					objects = append(objects, S3Object{URI: project + "child.txt"})
+				}
+				return objects, nil
+			}
+			assert.Equal(t, project+"parent/subagents", SubagentTranscriptRoot(AgentCursor, parent))
+			assert.Equal(t, project+"parent/subagents", SubagentTranscriptRoot(AgentCursor, project+"parent.jsonl"))
+			assert.Equal(t, project+"child/subagents", SubagentTranscriptRoot(AgentCursor, child))
+			paths, err := SubagentTranscriptPaths(t.Context(), AgentCursor, parent)
+			require.NoError(t, err)
+			if canonical {
+				assert.Empty(t, paths)
+			} else {
+				assert.Equal(t, []string{child}, paths)
+			}
+		})
+	}
+}

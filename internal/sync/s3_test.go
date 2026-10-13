@@ -1271,12 +1271,13 @@ func TestProcessS3CodexRevertPageUsesThreadIndexTitle(t *testing.T) {
 }
 
 func TestSyncSessionWithS3CodexDescendants(t *testing.T) {
-	for _, state := range []string{"archived", "new child"} {
+	for _, state := range []string{"archived", "new children"} {
 		t.Run(state, func(t *testing.T) {
 			database := openTestDB(t)
 			const root = "s3://bucket/host-a/raw/codex"
 			const parent = "11111111-1111-4111-8111-111111111111"
 			const child = "22222222-2222-4222-8222-222222222222"
+			const sibling = "33333333-3333-4333-8333-333333333333"
 			const timestamp = "2026-01-01T00:00:00Z"
 			parentID, childID := "host-a~codex:"+parent, "host-a~codex:"+child
 			parentPath := root + "/2026/01/01/rollout-2026-01-01T00-00-00-" + parent + ".jsonl"
@@ -1292,16 +1293,22 @@ func TestSyncSessionWithS3CodexDescendants(t *testing.T) {
 				parentPath: content(testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp), 10),
 				childPath:  content(testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp), 42),
 			}
-			if state == "new child" {
-				objects[parentPath] += testjsonl.JoinJSONL(testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn", map[string]any{"message": "child task"}, timestamp), testjsonl.CodexFunctionCallOutputJSON("spawn", `{"agent_id":"`+child+`"}`, timestamp))
+			childURIs := map[string]string{child: childPath}
+			if state == "new children" {
+				siblingPath := root + "/2026/01/01/rollout-2026-01-01T00-00-00-" + sibling + ".jsonl"
+				childURIs[sibling] = siblingPath
+				objects[siblingPath] = content(testjsonl.CodexSubagentSessionMetaJSON(sibling, parent, "/work/project", "user", timestamp), 7)
+				for _, rawID := range []string{child, sibling} {
+					objects[parentPath] += testjsonl.JoinJSONL(testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn-"+rawID, map[string]any{"message": "child task"}, timestamp), testjsonl.CodexFunctionCallOutputJSON("spawn-"+rawID, `{"agent_id":"`+rawID+`"}`, timestamp))
+				}
 			}
-			oldFind := findCodexS3ParentSessionURIs
-			t.Cleanup(func() { findCodexS3ParentSessionURIs = oldFind })
-			findCodexS3ParentSessionURIs = func(configuredRoot, parentURI, childUUID string) []string {
+			oldDiscover := discoverCodexS3SessionURIs
+			t.Cleanup(func() { discoverCodexS3SessionURIs = oldDiscover })
+			listings := 0
+			discoverCodexS3SessionURIs = func(configuredRoot string) (map[string]string, error) {
 				require.Equal(t, root, configuredRoot)
-				require.Equal(t, parentPath, parentURI)
-				require.Equal(t, child, childUUID)
-				return []string{childPath}
+				listings++
+				return childURIs, nil
 			}
 			oldFetch, oldStat, oldCodexStat := fetchS3Object, statS3Object, statCodexS3Session
 			t.Cleanup(func() { fetchS3Object, statS3Object, statCodexS3Session = oldFetch, oldStat, oldCodexStat })
@@ -1348,6 +1355,81 @@ func TestSyncSessionWithS3CodexDescendants(t *testing.T) {
 			duplicate, err := database.GetSession(t.Context(), "codex:"+child)
 			require.NoError(t, err)
 			assert.Nil(t, duplicate)
+			if state == "new children" {
+				assert.Equal(t, 1, listings)
+				siblingUsage, err := database.GetSessionUsage(t.Context(), "host-a~codex:"+sibling, true)
+				require.NoError(t, err)
+				require.NotNil(t, siblingUsage)
+				assert.Equal(t, 7, siblingUsage.TotalOutputTokens)
+				assert.Equal(t, 1, fetches[childURIs[sibling]])
+			} else {
+				assert.Zero(t, listings)
+			}
 		})
 	}
+}
+
+type statOverrideS3Provider struct {
+	parser.S3Provider
+	stat func(string) (parser.S3Object, error)
+}
+
+func (p statOverrideS3Provider) S3StatSession(uri string) (parser.S3Object, error) {
+	return p.stat(uri)
+}
+
+func TestSyncSessionWithS3CursorChild(t *testing.T) {
+	database := openTestDB(t)
+	const root = "s3://bucket/host-a/raw/cursor"
+	const parentID = "host-a~cursor:parent"
+	const parentPath = root + "/project/agent-transcripts/parent/parent.jsonl"
+	const childPath = root + "/project/agent-transcripts/parent/subagents/child.jsonl"
+	content := `{"role":"user","message":{"content":"<user_query>task</user_query>"}}
+{"role":"assistant","message":{"content":"answer"}}
+`
+	oldFetch, oldLookup, oldPaths := fetchS3Object, lookupS3Provider, subagentTranscriptPaths
+	t.Cleanup(func() { fetchS3Object, lookupS3Provider, subagentTranscriptPaths = oldFetch, oldLookup, oldPaths })
+	fetches := make(map[string]int)
+	fetchS3Object = func(uri string) (io.ReadCloser, error) {
+		if uri != parentPath && uri != childPath {
+			return nil, missingS3ObjectError()
+		}
+		fetches[uri]++
+		return io.NopCloser(strings.NewReader(content)), nil
+	}
+	stat := func(uri string) (parser.S3Object, error) {
+		return parser.S3Object{URI: uri, Size: int64(len(content)), LastModified: time.Unix(100, 0)}, nil
+	}
+	lookupS3Provider = func(agent parser.AgentType) (parser.S3Provider, bool) {
+		provider, ok := oldLookup(agent)
+		if agent == parser.AgentCursor && ok {
+			return statOverrideS3Provider{S3Provider: provider, stat: stat}, true
+		}
+		return provider, ok
+	}
+	subagentTranscriptPaths = func(_ context.Context, agent parser.AgentType, uri string) ([]string, error) {
+		assert.Equal(t, parser.AgentCursor, agent)
+		if uri == parentPath {
+			return []string{childPath}, nil
+		}
+		assert.Equal(t, childPath, uri)
+		return nil, nil
+	}
+	path := parentPath
+	require.NoError(t, database.UpsertSession(t.Context(), db.Session{
+		ID: parentID, Agent: "cursor", Machine: "host-a", Project: "project", FilePath: &path,
+	}))
+	engine := NewEngine(t.Context(), database, EngineConfig{Machine: "receiver", Ephemeral: true, DeferStartupMaintenance: true})
+	t.Cleanup(engine.Close)
+	require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))
+	child, err := database.GetSessionFull(t.Context(), "host-a~cursor:child")
+	require.NoError(t, err)
+	require.NotNil(t, child)
+	require.NotNil(t, child.FilePath)
+	assert.Equal(t, childPath, *child.FilePath)
+	assert.Equal(t, "host-a", child.Machine)
+	require.NotNil(t, child.ParentSessionID)
+	assert.Equal(t, parentID, *child.ParentSessionID)
+	assert.Equal(t, 1, fetches[parentPath])
+	assert.Equal(t, 1, fetches[childPath])
 }

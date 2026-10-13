@@ -38,6 +38,30 @@ type cursorS3Transcript struct {
 	file DiscoveredFile
 }
 
+func cursorS3SubagentTranscriptPaths(ctx context.Context, sessionPath string) ([]string, error) {
+	projectRoot, _, ok := strings.CutLast(sessionPath, "/agent-transcripts/")
+	if !ok {
+		return nil, nil
+	}
+	sourceRoot, _, ok := strings.CutLast(projectRoot, "/")
+	if !ok {
+		return nil, nil
+	}
+	byRoot, err := discoverCursorS3ByRoot(ctx, []string{sourceRoot})
+	if err != nil {
+		return nil, err
+	}
+	prefix := SubagentTranscriptRoot(AgentCursor, sessionPath) + "/"
+	var paths []string
+	for _, file := range byRoot[sourceRoot] {
+		if strings.HasPrefix(file.Path, prefix) {
+			paths = append(paths, file.Path)
+		}
+	}
+	slices.Sort(paths)
+	return paths, nil
+}
+
 func discoverCursorS3ByRoot(
 	ctx context.Context, roots []string,
 ) (map[string][]DiscoveredFile, error) {

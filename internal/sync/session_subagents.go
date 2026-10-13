@@ -10,6 +10,7 @@ import (
 )
 
 var subagentTranscriptPaths = parser.SubagentTranscriptPaths
+var discoverCodexS3SessionURIs = parser.DiscoverCodexS3SessionURIs
 
 // ErrSubagentRefreshIncomplete marks lock contention after the parent refresh.
 var ErrSubagentRefreshIncomplete = errors.New(
@@ -22,6 +23,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 	seenIDs := make(map[string]bool)
 	attemptedPaths := make(map[string]bool)
 	discoveredRoots := make(map[string]bool)
+	codexS3Sources := make(map[string]map[string]string)
 	queue := []string{sessionID}
 	sourceParents := make(map[string]string)
 	for len(queue) > 0 {
@@ -56,10 +58,15 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 						break
 					}
 				}
-				for _, uri := range findCodexS3ParentSessionURIs(configuredRoot, parentPath, strings.TrimPrefix(rawID, "codex:")) {
-					if "codex:"+parser.CodexSessionUUIDFromFilename(uri[strings.LastIndex(uri, "/")+1:]) == rawID {
+				if root, ok := parser.CodexS3SourceRoot(configuredRoot, parentPath); ok {
+					uris, listed := codexS3Sources[root]
+					if !listed {
+						uris, err = discoverCodexS3SessionURIs(root)
+						codexS3Sources[root] = uris
+						refreshErr = errors.Join(refreshErr, err)
+					}
+					if uri := uris[strings.TrimPrefix(rawID, "codex:")]; uri != "" {
 						path, s3ParentID = uri, parentID
-						break
 					}
 				}
 			}
