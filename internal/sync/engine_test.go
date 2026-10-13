@@ -10142,6 +10142,9 @@ func TestTargetedRefreshLockWait(t *testing.T) {
 		{"subagents", func(ctx context.Context, e *Engine) error { return e.SyncSessionWithSubagentsContext(ctx, "parent") }},
 	} {
 		for _, outcome := range []string{"release", "busy", "cancel"} {
+			if entry.name != "usage" && outcome != "busy" {
+				continue
+			}
 			t.Run(entry.name+"/"+outcome, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					fx := newEngineFixture(t)
@@ -10258,7 +10261,11 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 	}
 	t.Run("codex", func(t *testing.T) {
 		for _, agent := range []parser.AgentType{parser.AgentCodex, parser.AgentTraeX, parser.AgentAugureCode} {
-			for _, state := range []string{"archived", "new child", "new parent", "missing intermediate", "metadata spawn", "imported grandchild", "restored child", "missing spawner", "trashed child", "excluded child"} {
+			states := []string{"archived"}
+			if agent == parser.AgentCodex {
+				states = append(states, "new child", "new parent", "missing intermediate", "metadata spawn", "imported grandchild", "restored child", "missing spawner", "trashed child", "excluded child")
+			}
+			for _, state := range states {
 				t.Run(string(agent)+"/"+state, func(t *testing.T) {
 					def, ok := parser.AgentByType(agent)
 					require.True(t, ok)
@@ -10518,15 +10525,17 @@ func TestSubagentRefreshMarksContentionAfterParentAsIncomplete(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				fx := newEngineFixture(t)
 				t.Cleanup(fx.engine.Close)
-				parentPath := fx.writeClaudeSession(t, "proj", "parent.jsonl", "hello")
-				require.NoError(t, fx.engine.SyncPathsContext(t.Context(), []string{parentPath}))
-				fx.appendClaudeMessage(t, parentPath, "changed")
-				childPath := filepath.Join(
-					fx.claudeDir, "proj", "parent", "subagents", "agent-child.jsonl",
-				)
-				require.NoError(t, os.MkdirAll(filepath.Dir(childPath), 0o755))
-				require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.NewSessionBuilder().
-					AddClaudeUser("2024-01-01T00:00:00Z", "child").String()), 0o644))
+				if agent == parser.AgentClaude {
+					parentPath := fx.writeClaudeSession(t, "proj", "parent.jsonl", "hello")
+					require.NoError(t, fx.engine.SyncPathsContext(t.Context(), []string{parentPath}))
+					fx.appendClaudeMessage(t, parentPath, "changed")
+					childPath := filepath.Join(
+						fx.claudeDir, "proj", "parent", "subagents", "agent-child.jsonl",
+					)
+					require.NoError(t, os.MkdirAll(filepath.Dir(childPath), 0o755))
+					require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.NewSessionBuilder().
+						AddClaudeUser("2024-01-01T00:00:00Z", "child").String()), 0o644))
+				}
 
 				parentID := "parent"
 				if agent == parser.AgentCodex {

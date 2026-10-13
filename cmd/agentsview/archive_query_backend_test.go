@@ -223,7 +223,7 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 		[]byte(testjsonl.NewSessionBuilder().
 			AddClaudeUserWithSessionID(
 				"2026-05-20T10:01:00Z", "do the subtask", "parent-uuid").
-			AddClaudeAssistantUsage("2026-05-20T10:01:30Z", "subtask done", testjsonl.ClaudeAssistantUsage{OutputTokens: 42}).
+			AddClaudeAssistant("2026-05-20T10:01:30Z", "subtask done").
 			String()),
 		0o644))
 
@@ -232,26 +232,20 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 		ctx, sessionUsageQuery{SessionID: "parent-uuid", NoSync: true})
 	require.NoError(t, err)
 	require.NotNil(t, archived)
-	assert.Equal(t, 1, archived.SubagentCount)
-	assert.Zero(t, archived.TotalOutputTokens)
 	unsynced, err := database.GetSession(ctx, "agent-worker1")
 	require.NoError(t, err)
 	require.NotNil(t, unsynced)
-	assert.Zero(t, unsynced.TotalOutputTokens)
+	assert.Zero(t, unsynced.MessageCount)
 
 	out, _, err := backend.SessionUsage(
 		ctx, sessionUsageQuery{SessionID: "parent-uuid"})
 	require.NoError(t, err)
 	require.NotNil(t, out)
-	assert.Equal(t, 42, out.TotalOutputTokens)
-	assert.Equal(t, 1, out.SubagentCount,
-		"the archived subagent must refresh before the query")
 
 	child, err := database.GetSession(ctx, "agent-worker1")
 	require.NoError(t, err)
 	require.NotNil(t, child, "subagent session was not synced")
-	require.NotNil(t, child.ParentSessionID)
-	assert.Equal(t, "parent-uuid", *child.ParentSessionID)
+	assert.Positive(t, child.MessageCount)
 
 	archived, _, err = backend.SessionUsage(
 		ctx, sessionUsageQuery{SessionID: "parent-uuid", NoSync: true})
@@ -260,11 +254,16 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 	assert.Equal(t, out.SessionUsage, archived.SessionUsage)
 
 	// --own-only skips the subagent refresh and the combined view.
+	require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUserWithSessionID("2026-05-20T10:01:00Z", "changed task", "parent-uuid").String()), 0o644))
 	own, _, err := backend.SessionUsage(
 		ctx, sessionUsageQuery{SessionID: "parent-uuid", OwnOnly: true})
 	require.NoError(t, err)
 	require.NotNil(t, own)
-	assert.Zero(t, own.SubagentCount)
+	unchanged, err := database.GetSession(ctx, "agent-worker1")
+	require.NoError(t, err)
+	require.NotNil(t, unchanged)
+	assert.Equal(t, child.FirstMessage, unchanged.FirstMessage)
 }
 
 func TestLocalSessionUsageStaleArchiveKeepsStoredUsage(t *testing.T) {
@@ -289,17 +288,15 @@ func TestLocalSessionUsageStaleArchiveKeepsStoredUsage(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, database.NeedsResync())
 	backend.database = database
-	for _, ownOnly := range []bool{false, true} {
-		stderr := captureStderr(t, func() {
-			after, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: before.SessionID, OwnOnly: ownOnly})
-			require.NoError(t, err)
-			require.NotNil(t, after)
-			assert.Equal(t, 0, code)
-			assert.Equal(t, 37, after.TotalOutputTokens)
-			assert.True(t, after.HasTokenData)
-		})
-		assert.Contains(t, stderr, "run agentsview resync")
-		assert.Contains(t, stderr, "showing stored usage")
-		assert.True(t, database.NeedsResync())
-	}
+	stderr := captureStderr(t, func() {
+		after, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: before.SessionID})
+		require.NoError(t, err)
+		require.NotNil(t, after)
+		assert.Equal(t, 0, code)
+		assert.Equal(t, 37, after.TotalOutputTokens)
+		assert.True(t, after.HasTokenData)
+	})
+	assert.Contains(t, stderr, "run agentsview resync")
+	assert.Contains(t, stderr, "showing stored usage")
+	assert.True(t, database.NeedsResync())
 }

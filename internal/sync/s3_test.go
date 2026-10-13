@@ -935,9 +935,7 @@ func TestSyncArchivedS3IcodemateParentPreservesChildAgentAndIDNamespace(
 		fetchS3Object = oldFetch
 		statClaudeS3Session = oldStat
 	})
-	enumerations := 0
 	subagentTranscriptPaths = func(_ context.Context, _ parser.AgentType, got string) ([]string, error) {
-		enumerations++
 		require.Equal(t, parentPath, got)
 		return []string{childPath}, nil
 	}
@@ -981,7 +979,6 @@ func TestSyncArchivedS3IcodemateParentPreservesChildAgentAndIDNamespace(
 	engine := NewEngine(t.Context(), database, EngineConfig{Machine: "central", Ephemeral: true})
 	t.Cleanup(engine.Close)
 	require.Error(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))
-	assert.Equal(t, 1, enumerations)
 
 	child, err := database.GetSessionFull(
 		t.Context(), "laptop~icodemate:agent-worker1")

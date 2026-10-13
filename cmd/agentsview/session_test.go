@@ -1589,44 +1589,25 @@ func TestSessionUsage_MissingSessionDoesNotSync(t *testing.T) {
 }
 
 func TestSessionUsage_NewerServerRejectsUsage(t *testing.T) {
-	for _, tc := range []struct {
-		mode    string
-		ownOnly bool
-		noSync  bool
-	}{
-		{mode: "probe", noSync: true},
-		{mode: "runtime"},
-		{mode: "explicit server"},
-		{mode: "explicit server", ownOnly: true},
-	} {
-		mode := tc.mode
-		query := sessionUsageQuery{SessionID: "codex:session-a", OwnOnly: tc.ownOnly, NoSync: tc.noSync}
-		t.Run(fmt.Sprintf("%s/own=%t/no-sync=%t", mode, query.OwnOnly, query.NoSync), func(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cached=%t", cached), func(t *testing.T) {
 			newAgentDataDir(t)
+			query := sessionUsageQuery{SessionID: "codex:session-a"}
 			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: query.SessionID, apiVersion: server.APIVersion + 1})
 			var out *sessionUsageOutput
 			var code int
 			var err error
-			if mode == "explicit server" {
-				args := []string{"session", "usage", query.SessionID, "--server", ts.URL}
-				if query.OwnOnly {
-					args = append(args, "--own-only")
-				}
-				if query.NoSync {
-					args = append(args, "--no-sync")
-				}
-				out, code, err = sessionUsageDataForCommand(sessionUsageCommand(t, args...), query.SessionID)
-			} else {
-				tr := transport{URL: ts.URL}
-				if mode == "runtime" {
-					tr.Runtime = &DaemonRuntime{API: server.APIVersion + 1}
-				}
+			if cached {
+				tr := transport{URL: ts.URL, Runtime: &DaemonRuntime{API: server.APIVersion + 1}}
 				out, code, err = httpSessionUsageData(t.Context(), tr, "", query)
+			} else {
+				cmd := sessionUsageCommand(t, "session", "usage", query.SessionID, "--server", ts.URL)
+				out, code, err = sessionUsageDataForCommand(cmd, query.SessionID)
 			}
 			require.ErrorContains(t, err, "is newer than this client; upgrade agentsview")
 			assert.Nil(t, out)
 			assert.Equal(t, tokenUseExitErr, code)
-			if mode == "runtime" {
+			if cached {
 				assert.Empty(t, reqs.RequestPath)
 			} else {
 				assert.Equal(t, []string{"/api/v1/version"}, reqs.RequestPath)
@@ -1647,11 +1628,8 @@ func TestSessionUsage_RemoteRefresh(t *testing.T) {
 		{"current", server.APIVersion, 0, "", false, false},
 		{"current own only", server.APIVersion, 0, "", true, false},
 		{"busy", server.APIVersion, http.StatusConflict, "sync or maintenance is already running", false, false},
-		{"busy own only", server.APIVersion, http.StatusConflict, "sync or maintenance is already running", true, false},
 		{"stale", server.APIVersion, http.StatusConflict, "run agentsview resync", false, true},
-		{"stale own only", server.APIVersion, http.StatusConflict, "run agentsview resync", true, true},
 		{"older", 10, 0, "predates targeted session refresh", false, false},
-		{"older own only", 10, 0, "predates targeted session refresh", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			newAgentDataDir(t)

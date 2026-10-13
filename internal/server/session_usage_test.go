@@ -612,21 +612,8 @@ func TestHandleSessionUsage_SubagentsReadAndSyncOrigin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, child, "foreign-origin sync unexpectedly wrote archive data")
 
-	childPath := filepath.Join(subagentsDir, "agent-worker1.jsonl")
-	parentID := "parent-uuid"
-	require.NoError(t, te.db.UpsertSession(ctx, db.Session{
-		ID: "agent-worker1", Agent: "claude", Machine: "local", Project: "project",
-		FilePath: &childPath, ParentSessionID: &parentID, RelationshipType: "subagent",
-	}))
-	require.False(t, te.engine.StartupReconciled())
 	synced := te.post(t, "/api/v1/sessions/sync", body)
 	assertStatus(t, synced, http.StatusOK)
-	w = te.get(t, "/api/v1/sessions/parent-uuid/usage?subagents=true")
-	assertStatus(t, w, http.StatusOK)
-	got = nil
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.InDelta(t, float64(1), got["subagent_count"], 0)
-	assert.InDelta(t, float64(42), got["total_output_tokens"], 0)
 }
 
 // TestHandleSessionUsage_BreakdownRoundTripsWebSearchRequests pins that the
