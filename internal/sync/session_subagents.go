@@ -16,8 +16,8 @@ var ErrSubagentRefreshIncomplete = errors.New(
 	"subagent refresh incomplete; usage aggregate may be incomplete",
 )
 
-// SyncSessionWithSubagentsContext refreshes one session and the candidate
-// Claude subagent transcripts in its root tree. Child discovery still runs
+// SyncSessionWithSubagentsContext refreshes one session, its archived descendant
+// sources, and newly discovered Claude subagent transcripts. Child discovery runs
 // when the requested-session refresh fails so callers can retain archived data
 // while ingesting any descendants that remain available.
 func (e *Engine) SyncSessionWithSubagentsContext(
@@ -41,6 +41,26 @@ func (e *Engine) SyncSessionWithSubagentsContext(
 		sourcePath = e.FindSourceFile(ctx, sessionID)
 	}
 	paths := subagentTranscriptPaths(sourcePath)
+	parent, lookupErr := e.db.GetSession(ctx, sessionID)
+	if lookupErr != nil {
+		return errors.Join(parentErr, lookupErr)
+	}
+	if parent != nil {
+		descendantPaths, err := e.db.ListActiveDescendantSessionSourcePaths(ctx, parent.Machine, parent.Agent, []string{sessionID})
+		if err != nil {
+			return errors.Join(parentErr, err)
+		}
+		paths = append(paths, descendantPaths...)
+	}
+	seen := map[string]bool{sourcePath: true}
+	unique := paths[:0]
+	for _, path := range paths {
+		if !seen[path] {
+			seen[path] = true
+			unique = append(unique, path)
+		}
+	}
+	paths = unique
 	if len(paths) == 0 {
 		return parentErr
 	}

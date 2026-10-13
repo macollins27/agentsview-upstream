@@ -584,11 +584,16 @@ sessions already present there.
   daemon-owned.
 - A stale archive returns HTTP 409 with `X-Agentsview-Resync-Required: true`.
   Run `agentsview resync` before retrying `session sync`.
-- An ID-based refresh with `subagents=true` waits briefly for a busy engine,
-  then returns HTTP 409 if the sync or maintenance pass continues. If a pass
+- An ID-based refresh with `subagents=true` or `usage_refresh=true` waits briefly
+  for a busy engine, then returns HTTP 409 if the sync or maintenance pass
+  continues. If a pass
   starts between the parent and child refreshes, the response says the usage
   aggregate may be incomplete. Ordinary ID and path syncs wait for that pass to
   finish.
+- Usage refresh reports ingestion failures and returns the replacement session
+  ID when Vibe metadata changes its identity. Combined usage refreshes archived
+  descendant sources, including separate Codex rollouts, without startup
+  ingestion.
 - If a [`pg serve`](/docs/pg-sync/#agentsview-pg-serve) daemon is running
   (read-only), sync refuses with a clear error.
 - If `AGENTSVIEW_NO_DAEMON=1` is set, the CLI runs the sync in-process only

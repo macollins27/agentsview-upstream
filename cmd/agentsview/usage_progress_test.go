@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net"
 	"net/http"
@@ -256,4 +257,158 @@ func TestUsageProgressPrintsSlowWorkToStderr(t *testing.T) {
 		synctest.Wait()
 		assert.Contains(t, output.String(), "(6s)", "long preparation must keep reporting its elapsed time")
 	})
+}
+
+func usageHandlerBackend(t *testing.T, cfg config.Config, database *db.DB, engine *agentsync.Engine) daemonArchiveQueryBackend {
+	t.Helper()
+	ts := httptest.NewUnstartedServer(nil)
+	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
+	ts.Config.Handler = server.New(cfg, database, engine).Handler()
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return daemonArchiveQueryBackend{tr: transport{URL: ts.URL, Runtime: daemonRuntimeFromTestURL(t, ts.URL)}}
+}
+
+func TestSessionUsageOwnOnlyRealRefreshFailures(t *testing.T) {
+	for _, failure := range []string{"busy", "write failure"} {
+		t.Run(failure, func(t *testing.T) {
+			cfg := testConfigWithClaudeFixture(t)
+			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
+			t.Cleanup(engine.Close)
+			path := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj0", "session0.jsonl")
+			write := func(output int) {
+				require.NoError(t, os.WriteFile(path, []byte(testjsonl.NewSessionBuilder().
+					AddClaudeUser("2026-01-01T00:00:00Z", "task").
+					AddClaudeAssistantUsage("2026-01-01T00:00:01Z", "answer", testjsonl.ClaudeAssistantUsage{OutputTokens: output}).String()), 0o600))
+			}
+			write(10)
+			require.NoError(t, engine.SyncPathsContext(t.Context(), []string{path}))
+			write(99)
+			backend := usageHandlerBackend(t, cfg, database, engine)
+			if failure == "write failure" {
+				conn, err := sql.Open("sqlite3", cfg.DBPath)
+				require.NoError(t, err)
+				_, err = conn.ExecContext(t.Context(), `CREATE TRIGGER reject_refresh BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'refresh write rejected'); END`)
+				require.NoError(t, err)
+				require.NoError(t, conn.Close())
+			}
+			read := func() error {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				start := time.Now()
+				stderr := captureStderr(t, func() {
+					out, code, err := backend.SessionUsage(ctx, sessionUsageQuery{SessionID: "session0", OwnOnly: true})
+					require.NoError(t, err)
+					require.NotNil(t, out)
+					assert.Equal(t, tokenUseExitOK, code)
+					assert.Equal(t, 10, out.TotalOutputTokens)
+				})
+				assert.Contains(t, stderr, "showing stored usage")
+				if failure == "busy" {
+					assert.Contains(t, stderr, "HTTP 409")
+					assert.Contains(t, stderr, "sync or maintenance is already running")
+					assert.Less(t, time.Since(start), 2*time.Second)
+				} else {
+					assert.Contains(t, stderr, "refresh write rejected")
+				}
+				return nil
+			}
+			if failure == "busy" {
+				require.NoError(t, engine.RunExclusive(read))
+			} else {
+				require.NoError(t, read())
+			}
+		})
+	}
+}
+
+func TestSessionUsageOwnOnlyVibeReplacementID(t *testing.T) {
+	for _, promotion := range []bool{false, true} {
+		t.Run(fmt.Sprintf("promotion=%t", promotion), func(t *testing.T) {
+			root := t.TempDir()
+			cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, InstallationID: "local"}
+			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
+			t.Cleanup(engine.Close)
+			const dirName = "session_20260616_083518_abc123"
+			const canonical = "vibe:11111111-1111-4111-8111-111111111111"
+			dir := filepath.Join(root, dirName)
+			require.NoError(t, os.MkdirAll(dir, 0o700))
+			messages := filepath.Join(dir, "messages.jsonl")
+			require.NoError(t, os.WriteFile(messages, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o600))
+			meta := filepath.Join(dir, "meta.json")
+			writeMeta := func() {
+				require.NoError(t, os.WriteFile(meta, []byte(`{"session_id":"11111111-1111-4111-8111-111111111111"}`), 0o600))
+			}
+			if !promotion {
+				writeMeta()
+			}
+			require.NoError(t, engine.SyncPathsContext(t.Context(), []string{messages}))
+			requested, expected := canonical, "vibe:"+dirName
+			if promotion {
+				writeMeta()
+				requested, expected = expected, requested
+			} else {
+				require.NoError(t, os.Remove(meta))
+			}
+			backend := usageHandlerBackend(t, cfg, database, engine)
+			stderr := captureStderr(t, func() {
+				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested, OwnOnly: true})
+				require.NoError(t, err)
+				require.NotNil(t, out)
+				assert.Equal(t, expected, out.SessionID)
+				assert.Equal(t, tokenUseExitNoTokenData, code)
+			})
+			assert.Empty(t, stderr)
+			old, err := database.GetSession(t.Context(), requested)
+			require.NoError(t, err)
+			assert.Nil(t, old)
+		})
+	}
+}
+
+func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentCodex: {root}}, InstallationID: "local"}
+	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+	engineConfig := agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true}
+	engine := agentsync.NewEngine(t.Context(), database, engineConfig)
+	const parent = "11111111-1111-4111-8111-111111111111"
+	const child = "22222222-2222-4222-8222-222222222222"
+	const other = "33333333-3333-4333-8333-333333333333"
+	const timestamp = "2026-01-01T00:00:00Z"
+	write := func(id, metadata string, output int) string {
+		path := filepath.Join(root, "rollout-2026-01-01T00-00-00-"+id+".jsonl")
+		require.NoError(t, os.WriteFile(path, []byte(testjsonl.JoinJSONL(metadata,
+			testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
+			testjsonl.CodexMsgJSON("user", "task", timestamp),
+			testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
+			testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0))), 0o600))
+		return path
+	}
+	parentPath := write(parent, testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp), 10)
+	childMeta := testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp)
+	childPath := write(child, childMeta, 1)
+	require.NoError(t, engine.SyncPathsContext(t.Context(), []string{parentPath, childPath}))
+	engine.Close()
+	write(child, childMeta, 42)
+	write(other, testjsonl.CodexSessionMetaJSON(other, "/work/project", "user", timestamp), 999)
+	engine = agentsync.NewEngine(t.Context(), database, engineConfig)
+	t.Cleanup(engine.Close)
+	backend := usageHandlerBackend(t, cfg, database, engine)
+	require.False(t, engine.StartupReconciled())
+	stderr := captureStderr(t, func() {
+		out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:" + parent})
+		require.NoError(t, err)
+		require.NotNil(t, out)
+		assert.Equal(t, tokenUseExitOK, code)
+		assert.Equal(t, 52, out.TotalOutputTokens)
+		assert.Equal(t, 1, out.SubagentCount)
+	})
+	assert.Empty(t, stderr)
+	assert.False(t, engine.StartupReconciled())
+	unrelated, err := database.GetSession(t.Context(), "codex:"+other)
+	require.NoError(t, err)
+	assert.Nil(t, unrelated)
 }

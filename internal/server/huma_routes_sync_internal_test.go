@@ -1802,7 +1802,7 @@ type syncErrorSessionService struct {
 }
 
 func (syncErrorSessionService) Sync(context.Context, service.SyncInput) (*service.SessionDetail, error) {
-	return nil, syncpkg.ErrSubagentRefreshIncomplete
+	return nil, errors.Join(syncpkg.ErrSubagentRefreshIncomplete, syncpkg.ErrSyncInProgress)
 }
 
 func TestHumaSyncSessionReportsIncompleteSubagentRefresh(t *testing.T) {

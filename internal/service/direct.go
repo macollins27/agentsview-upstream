@@ -536,6 +536,9 @@ func (b *directBackend) Sync(
 	if in.Subagents && in.ID == "" {
 		return nil, errors.New("sync: subagents requires id")
 	}
+	if in.UsageRefresh && in.ID == "" {
+		return nil, errors.New("sync: usage_refresh requires id")
+	}
 	if in.Subagents {
 		if err := b.engine.SyncSessionWithSubagentsContext(
 			ctx, in.ID,
@@ -553,33 +556,42 @@ func (b *directBackend) Sync(
 				"sync: no file_path recorded for session %q", in.ID,
 			)
 		}
-		// Visual Studio Copilot stores file_path as a
-		// <traceFile>#<conversationID> virtual key. Stripping it to the
-		// physical trace and syncing the path would reparse every conversation
-		// in that trace, lose the requested conversation's scope, and do
-		// nothing if the representative trace was deleted while the
-		// conversation lives on in a sibling. The single-session path keeps the
-		// conversation scope and follows it across sibling trace files.
-		if _, _, ok := parser.SplitVisualStudioCopilotVirtualPath(storedPath); ok {
-			if err := b.engine.SyncSingleSessionContext(
-				ctx, in.ID,
-			); err != nil {
+		if in.UsageRefresh {
+			if err := b.engine.SyncSingleSessionForUsageContext(ctx, in.ID); err != nil {
 				return nil, err
 			}
-			return b.Get(ctx, in.ID)
-		}
-		if _, _, ok := parser.SplitWindsurfVirtualPath(storedPath); ok {
-			if err := b.engine.SyncSingleSessionContext(
-				ctx, in.ID,
-			); err != nil {
-				return nil, err
+			path = parser.ResolveSourceFilePath(storedPath)
+		} else {
+			// Visual Studio Copilot stores file_path as a
+			// <traceFile>#<conversationID> virtual key. Stripping it to the
+			// physical trace and syncing the path would reparse every conversation
+			// in that trace, lose the requested conversation's scope, and do
+			// nothing if the representative trace was deleted while the
+			// conversation lives on in a sibling. The single-session path keeps the
+			// conversation scope and follows it across sibling trace files.
+			if _, _, ok := parser.SplitVisualStudioCopilotVirtualPath(storedPath); ok {
+				if err := b.engine.SyncSingleSessionContext(
+					ctx, in.ID,
+				); err != nil {
+					return nil, err
+				}
+				return b.Get(ctx, in.ID)
 			}
-			return b.Get(ctx, in.ID)
+			if _, _, ok := parser.SplitWindsurfVirtualPath(storedPath); ok {
+				if err := b.engine.SyncSingleSessionContext(
+					ctx, in.ID,
+				); err != nil {
+					return nil, err
+				}
+				return b.Get(ctx, in.ID)
+			}
+			path = parser.ResolveSourceFilePath(storedPath)
 		}
-		path = parser.ResolveSourceFilePath(storedPath)
 	}
 
-	b.engine.SyncPaths([]string{path})
+	if !in.UsageRefresh {
+		b.engine.SyncPaths([]string{path})
+	}
 
 	id := in.ID
 	if id == "" {

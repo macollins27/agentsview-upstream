@@ -10103,28 +10103,31 @@ func TestEngine_TryRunExclusiveRejectsBusySyncWithoutRunningWork(t *testing.T) {
 }
 
 func TestGeneralSessionRefreshWaitsForBusyLock(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
-		t.Cleanup(engine.Close)
-		engine.syncMu.Lock()
-		started := make(chan struct{})
-		done := make(chan error, 1)
-		go func() {
-			started <- struct{}{}
-			done <- engine.SyncSingleSessionContext(t.Context(), "parent")
-		}()
-		<-started
-		// Mutex waits do not advance virtual time, so yield before releasing the lock.
-		runtime.Gosched()
-		select {
-		case err := <-done:
-			engine.syncMu.Unlock()
-			require.FailNow(t, "general refresh returned before the lock was released", "%v", err)
-		default:
-		}
+	engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
+	t.Cleanup(engine.Close)
+	engine.syncMu.Lock()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- engine.SyncSingleSessionContext(t.Context(), "parent")
+	}()
+	<-started
+	// Mutex waits prevent virtual time from advancing, so this hold uses real time.
+	time.Sleep(time.Second)
+	select {
+	case err := <-done:
 		engine.syncMu.Unlock()
-		assert.NotErrorIs(t, <-done, ErrSyncInProgress)
-	})
+		require.FailNow(t, "manual refresh returned while the lock was held beyond the usage deadline", "%v", err)
+	default:
+	}
+	engine.syncMu.Unlock()
+	select {
+	case err := <-done:
+		require.NotErrorIs(t, err, ErrSyncInProgress)
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "manual refresh did not complete after the lock was released")
+	}
 }
 
 func TestTargetedRefreshLockWait(t *testing.T) {

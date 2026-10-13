@@ -213,7 +213,11 @@ func httpSessionUsageData(
 			syncErr = fmt.Errorf("server API version %d predates targeted session refresh; run agentsview daemon restart or upgrade the server", apiVersion)
 		}
 		if syncErr == nil {
-			_, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: !query.OwnOnly})
+			var refreshed *service.SessionDetail
+			refreshed, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: !query.OwnOnly, UsageRefresh: true})
+			if syncErr == nil && refreshed != nil {
+				resolvedID = refreshed.ID
+			}
 		}
 		if syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
 			fmt.Fprintf(os.Stderr, "warning: sync failed: %v; showing stored usage, which may be incomplete\n", syncErr)
