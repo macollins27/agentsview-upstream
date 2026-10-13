@@ -991,6 +991,7 @@ func TestDirectBackend_Sync_VibeFallbackIDReturnsPromotedSession(t *testing.T) {
 		},
 		Machine: "local",
 	})
+	t.Cleanup(engine.Close)
 	svc := service.NewDirectBackend(d, engine)
 
 	dirName := "session_20260616_083518_abc123"
@@ -1031,63 +1032,14 @@ func TestDirectBackend_Sync_VibeFallbackIDReturnsPromotedSession(t *testing.T) {
 	stale, err := d.GetSession(t.Context(), fallbackID)
 	require.NoError(t, err)
 	assert.Nil(t, stale)
-}
 
-// TestDirectBackend_Sync_VibeCanonicalIDResolvesFallbackAfterMetaRemoved
-// verifies the reverse of the promotion case: when meta.json is removed, the
-// session is demoted to the directory-name fallback ID, and syncing the old
-// canonical ID resolves to that fallback session instead of reporting the
-// session as not found.
-func TestDirectBackend_Sync_VibeCanonicalIDResolvesFallbackAfterMetaRemoved(t *testing.T) {
-	vibeDir := t.TempDir()
-	d := dbtest.OpenTestDB(t)
-	engine := sync.NewEngine(t.Context(), d, sync.EngineConfig{
-		AgentDirs: map[parser.AgentType][]string{
-			parser.AgentVibe: {vibeDir},
-		},
-		Machine: "local",
-	})
-	svc := service.NewDirectBackend(d, engine)
-
-	dirName := "session_20260616_083518_abc123"
-	sessionDir := filepath.Join(vibeDir, dirName)
-	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
-	messagesPath := filepath.Join(sessionDir, "messages.jsonl")
-	require.NoError(t, os.WriteFile(
-		messagesPath,
-		[]byte(`{"role":"user","content":"hello vibe"}`+"\n"),
-		0o644,
-	))
-	sessionID := "abc123def-0000-0000-0000-000000000000"
-	canonicalID := "vibe:" + sessionID
-	metaPath := filepath.Join(sessionDir, "meta.json")
-	require.NoError(t, os.WriteFile(
-		metaPath,
-		[]byte(`{"session_id":"`+sessionID+`","title":"Canonical"}`+"\n"),
-		0o644,
-	))
-
-	// First sync stores the session under the canonical meta-derived ID.
-	engine.SyncPaths([]string{messagesPath})
-	canonical, err := d.GetSession(t.Context(), canonicalID)
-	require.NoError(t, err)
-	require.NotNil(t, canonical)
-
-	// meta.json is removed, so the next sync demotes the session to the
-	// directory-name fallback ID. Bump the transcript mtime so the sync does
-	// not skip the otherwise-unchanged file.
 	require.NoError(t, os.Remove(metaPath))
-	future := time.Now().Add(time.Hour)
 	require.NoError(t, os.Chtimes(messagesPath, future, future))
-
-	detail, err := svc.Sync(t.Context(), service.SyncInput{
-		ID: canonicalID,
-	})
+	detail, err = svc.Sync(t.Context(), service.SyncInput{ID: "vibe:" + sessionID})
 	require.NoError(t, err)
 	require.NotNil(t, detail)
-	assert.Equal(t, "vibe:"+dirName, detail.ID)
-
-	stale, err := d.GetSession(t.Context(), canonicalID)
+	assert.Equal(t, fallbackID, detail.ID)
+	stale, err = d.GetSession(t.Context(), "vibe:"+sessionID)
 	require.NoError(t, err)
 	assert.Nil(t, stale)
 }

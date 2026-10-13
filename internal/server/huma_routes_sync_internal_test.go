@@ -1799,20 +1799,24 @@ func TestHumaSyncSessionLocalNoSyncRejectsStaleDB(t *testing.T) {
 
 type syncErrorSessionService struct {
 	service.SessionService
+	inputs []service.SyncInput
 }
 
-func (syncErrorSessionService) Sync(context.Context, service.SyncInput) (*service.SessionDetail, error) {
+func (s *syncErrorSessionService) Sync(_ context.Context, input service.SyncInput) (*service.SessionDetail, error) {
+	s.inputs = append(s.inputs, input)
 	return nil, errors.Join(syncpkg.ErrSubagentRefreshIncomplete, syncpkg.ErrSyncInProgress)
 }
 
 func TestHumaSyncSessionReportsIncompleteSubagentRefresh(t *testing.T) {
 	f := newSyncRouteFixture(t)
 	f.srv.engine = f.srv.syncEngineForLocal(t.Context(), f.db)
-	f.srv.sessions = syncErrorSessionService{}
+	svc := &syncErrorSessionService{}
+	f.srv.sessions = svc
 	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sessions/sync",
-		service.SyncInput{ID: "parent", Subagents: true})
+		service.SyncInput{ID: "parent", Subagents: true, UsageRefresh: true})
 	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
 	assert.Contains(t, w.Body.String(), "subagents were skipped")
+	assert.Equal(t, []service.SyncInput{{ID: "parent", Subagents: true, UsageRefresh: true}}, svc.inputs)
 }
 
 func TestHumaSyncSessionCanceledPreResyncReturnsNil(t *testing.T) {

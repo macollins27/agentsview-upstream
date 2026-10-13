@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json/v2"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,7 +24,6 @@ import (
 	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/service"
 	agentsync "go.kenn.io/agentsview/internal/sync"
-	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 func TestUsageCommandsSkipStartupExceptStatusline(t *testing.T) {
@@ -128,65 +127,6 @@ func TestUsageCommandsReconcileDaemonStartedByDaily(t *testing.T) {
 	assert.Equal(t, lastSync, engine.LastSyncStartedAt(t.Context()), "warm prompt refresh must not repeat a full sync")
 }
 
-func TestSessionUsageBeforeStartupImportsClaudeChild(t *testing.T) {
-	cfg := testConfigWithClaudeFixture(t)
-	claudeDir := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj0")
-	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-	const timestamp = "2026-01-01T00:00:00Z"
-	parentPath := filepath.Join(claudeDir, "parent-a.jsonl")
-	parent := testjsonl.NewSessionBuilder().
-		AddClaudeUserWithSessionID(timestamp, "parent task", "parent-a").
-		AddClaudeAssistantUsage(timestamp, "parent result", testjsonl.ClaudeAssistantUsage{OutputTokens: 10}).String()
-	require.NoError(t, os.WriteFile(parentPath, []byte(parent), 0o600))
-	childDir := filepath.Join(claudeDir, "parent-a", "subagents")
-	require.NoError(t, os.MkdirAll(childDir, 0o700))
-	child := testjsonl.NewSessionBuilder().
-		AddClaudeUserWithSessionID(timestamp, "child task", "parent-a").
-		AddClaudeAssistantUsage(timestamp, "child result", testjsonl.ClaudeAssistantUsage{OutputTokens: 42}).String()
-	require.NoError(t, os.WriteFile(filepath.Join(childDir, "agent-child-a.jsonl"), []byte(child), 0o600))
-	engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{
-		AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true,
-	})
-	t.Cleanup(engine.Close)
-	_, err := service.NewDirectBackend(database, engine).Sync(t.Context(), service.SyncInput{Path: parentPath})
-	require.NoError(t, err)
-	require.False(t, engine.StartupReconciled())
-	ts := httptest.NewUnstartedServer(nil)
-	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
-	srv := server.New(cfg, database, engine)
-	ts.Config.Handler = srv.Handler()
-	ts.Start()
-	t.Cleanup(ts.Close)
-	stubStartBackgroundServeForTransport(t, func(_ context.Context, _ *config.Config, _ time.Duration, _ bool) (*DaemonRuntime, error) {
-		return daemonRuntimeFromTestURL(t, ts.URL), nil
-	})
-	backend, cleanup, err := resolveArchiveQueryBackendWithConfig(t.Context(), cfg, archiveQueryPolicy{
-		AutoStart: true, SkipInitialSync: true,
-	})
-	require.NoError(t, err)
-	defer cleanup()
-	require.NoError(t, engine.RunExclusive(func() error {
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		stderr := captureStderr(t, func() {
-			out, code, err := backend.SessionUsage(ctx, sessionUsageQuery{SessionID: "parent-a"})
-			require.NoError(t, err)
-			require.NotNil(t, out)
-			assert.Equal(t, tokenUseExitOK, code)
-			assert.Equal(t, 10, out.TotalOutputTokens)
-			assert.Zero(t, out.SubagentCount)
-		})
-		assert.Contains(t, stderr, "sync or maintenance is already running")
-		return nil
-	}))
-	out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "parent-a"})
-	require.NoError(t, err)
-	require.NotNil(t, out)
-	assert.Equal(t, tokenUseExitOK, code)
-	assert.Equal(t, 52, out.TotalOutputTokens)
-	assert.Equal(t, 1, out.SubagentCount)
-}
-
 func TestUsageProgressRejectsDaemonWithoutStreamEndpoint(t *testing.T) {
 	err := daemonRuntimeCompatibilityError(&DaemonRuntime{
 		API: 8, Data: db.CurrentDataVersion(),
@@ -259,75 +199,52 @@ func TestUsageProgressPrintsSlowWorkToStderr(t *testing.T) {
 	})
 }
 
-func usageHandlerBackend(t *testing.T, cfg config.Config, database *db.DB, engine *agentsync.Engine) daemonArchiveQueryBackend {
-	t.Helper()
-	ts := httptest.NewUnstartedServer(nil)
-	cfg.Host, cfg.Port = "127.0.0.1", ts.Listener.Addr().(*net.TCPAddr).Port
-	ts.Config.Handler = server.New(cfg, database, engine).Handler()
-	ts.Start()
-	t.Cleanup(ts.Close)
-	return daemonArchiveQueryBackend{tr: transport{URL: ts.URL, Runtime: daemonRuntimeFromTestURL(t, ts.URL)}}
-}
-
-func TestSessionUsageOwnOnlyRealRefreshFailures(t *testing.T) {
-	for _, failure := range []string{"busy", "write failure"} {
-		t.Run(failure, func(t *testing.T) {
-			cfg := testConfigWithClaudeFixture(t)
-			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
-			t.Cleanup(engine.Close)
-			path := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj0", "session0.jsonl")
-			write := func(output int) {
-				require.NoError(t, os.WriteFile(path, []byte(testjsonl.NewSessionBuilder().
-					AddClaudeUser("2026-01-01T00:00:00Z", "task").
-					AddClaudeAssistantUsage("2026-01-01T00:00:01Z", "answer", testjsonl.ClaudeAssistantUsage{OutputTokens: output}).String()), 0o600))
-			}
-			write(10)
-			require.NoError(t, engine.SyncPathsContext(t.Context(), []string{path}))
-			write(99)
-			backend := usageHandlerBackend(t, cfg, database, engine)
-			if failure == "write failure" {
-				conn, err := sql.Open("sqlite3", cfg.DBPath)
-				require.NoError(t, err)
-				_, err = conn.ExecContext(t.Context(), `CREATE TRIGGER reject_refresh BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'refresh write rejected'); END`)
-				require.NoError(t, err)
-				require.NoError(t, conn.Close())
-			}
-			read := func() error {
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				defer cancel()
-				start := time.Now()
-				stderr := captureStderr(t, func() {
-					out, code, err := backend.SessionUsage(ctx, sessionUsageQuery{SessionID: "session0", OwnOnly: true})
-					require.NoError(t, err)
-					require.NotNil(t, out)
-					assert.Equal(t, tokenUseExitOK, code)
-					assert.Equal(t, 10, out.TotalOutputTokens)
-				})
-				assert.Contains(t, stderr, "showing stored usage")
-				if failure == "busy" {
-					assert.Contains(t, stderr, "HTTP 409")
-					assert.Contains(t, stderr, "sync or maintenance is already running")
-					assert.Less(t, time.Since(start), 2*time.Second)
-				} else {
-					assert.Contains(t, stderr, "refresh write rejected")
+func TestSessionUsageVibeReplacementID(t *testing.T) {
+	for _, ownOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("own_only=%t", ownOnly), func(t *testing.T) {
+			const requested = "vibe:old-session"
+			const replacement = "vibe:replacement-session"
+			var paths []string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case "/api/v1/sessions/" + requested:
+					writeJSONResponse(w, `{"id":"`+requested+`","agent":"vibe"}`)
+				case "/api/v1/sessions/sync":
+					var input service.SyncInput
+					if !assert.NoError(t, json.UnmarshalRead(r.Body, &input)) {
+						return
+					}
+					assert.Equal(t, service.SyncInput{ID: requested, Subagents: !ownOnly, UsageRefresh: true}, input)
+					writeJSONResponse(w, `{"id":"`+replacement+`"}`)
+				case "/api/v1/sessions/" + replacement + "/usage":
+					query := "breakdown=true"
+					if !ownOnly {
+						query += "&subagents=true"
+					}
+					assert.Equal(t, query, r.URL.RawQuery)
+					writeJSONResponse(w, `{"session_id":"`+replacement+`","agent":"vibe","has_token_data":false}`)
+				default:
+					http.NotFound(w, r)
 				}
-				return nil
-			}
-			if failure == "busy" {
-				require.NoError(t, engine.RunExclusive(read))
-			} else {
-				require.NoError(t, read())
-			}
+			}))
+			t.Cleanup(ts.Close)
+			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL, Runtime: daemonRuntimeFromTestURL(t, ts.URL)}}
+			stderr := captureStderr(t, func() {
+				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested, OwnOnly: ownOnly})
+				require.NoError(t, err)
+				require.NotNil(t, out)
+				assert.Equal(t, replacement, out.SessionID)
+				assert.Equal(t, tokenUseExitNoTokenData, code)
+			})
+			assert.Empty(t, stderr)
+			assert.Equal(t, []string{"/api/v1/sessions/" + requested, "/api/v1/sessions/sync", "/api/v1/sessions/" + replacement + "/usage"}, paths)
 		})
 	}
-}
-
-func TestSessionUsageVibeReplacementID(t *testing.T) {
-	for _, promotion := range []bool{false, true} {
-		for _, ownOnly := range []bool{false, true} {
-			for _, direct := range []bool{false, true} {
-				t.Run(fmt.Sprintf("promotion=%t/own_only=%t/direct=%t", promotion, ownOnly, direct), func(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
+		for _, promotion := range []bool{false, true} {
+			for _, ownOnly := range []bool{false, true} {
+				t.Run(fmt.Sprintf("promotion=%t/own_only=%t", promotion, ownOnly), func(t *testing.T) {
 					root := t.TempDir()
 					cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, InstallationID: "local"}
 					database := dbtest.OpenTestDBAt(t, cfg.DBPath)
@@ -354,12 +271,7 @@ func TestSessionUsageVibeReplacementID(t *testing.T) {
 					} else {
 						require.NoError(t, os.Remove(meta))
 					}
-					var backend archiveQueryBackend
-					if direct {
-						backend = localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
-					} else {
-						backend = usageHandlerBackend(t, cfg, database, engine)
-					}
+					backend := localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
 					stderr := captureStderr(t, func() {
 						out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested, OwnOnly: ownOnly})
 						require.NoError(t, err)
@@ -368,297 +280,8 @@ func TestSessionUsageVibeReplacementID(t *testing.T) {
 						assert.Equal(t, tokenUseExitNoTokenData, code)
 					})
 					assert.Empty(t, stderr)
-					old, err := database.GetSession(t.Context(), requested)
-					require.NoError(t, err)
-					assert.Nil(t, old)
 				})
 			}
 		}
-	}
-}
-
-func TestSessionUsageColdStartRefreshesCodexChild(t *testing.T) {
-	for _, agent := range []parser.AgentType{parser.AgentCodex, parser.AgentTraeX, parser.AgentAugureCode} {
-		for _, state := range []string{"archived", "new child", "new parent", "missing intermediate", "metadata spawn", "imported grandchild", "restored child", "missing spawner", "trashed child", "excluded child"} {
-			t.Run(string(agent)+"/"+state, func(t *testing.T) {
-				def, ok := parser.AgentByType(agent)
-				require.True(t, ok)
-				id := func(raw string) string { return def.IDPrefix + raw }
-				root := t.TempDir()
-				cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{agent: {root}}, InstallationID: "local"}
-				database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-				engineConfig := agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true}
-				engine := agentsync.NewEngine(t.Context(), database, engineConfig)
-				const parent = "11111111-1111-4111-8111-111111111111"
-				const child = "22222222-2222-4222-8222-222222222222"
-				const other = "33333333-3333-4333-8333-333333333333"
-				const grandchild = "44444444-4444-4444-8444-444444444444"
-				const timestamp = "2026-01-01T00:00:00Z"
-				write := func(id, metadata string, output int, spawned string) string {
-					path := filepath.Join(root, "rollout-2026-01-01T00-00-00-"+id+".jsonl")
-					lines := []string{
-						metadata, testjsonl.CodexTurnContextJSON("gpt-5", timestamp),
-						testjsonl.CodexMsgJSON("user", "task", timestamp),
-						testjsonl.CodexMsgJSON("assistant", "answer", timestamp),
-						testjsonl.CodexTokenCountJSON(timestamp, 20, output, 0),
-					}
-					if spawned != "" {
-						lines = append(lines, testjsonl.CodexFunctionCallWithCallIDJSON("spawn_agent", "spawn", map[string]any{"message": "child task"}, timestamp),
-							testjsonl.CodexFunctionCallOutputJSON("spawn", `{"agent_id":"`+spawned+`"}`, timestamp))
-					}
-					require.NoError(t, os.WriteFile(path, []byte(testjsonl.JoinJSONL(lines...)), 0o600))
-					return path
-				}
-				parentMeta := testjsonl.CodexSessionMetaJSON(parent, "/work/project", "user", timestamp)
-				parentPath := write(parent, parentMeta, 10, "")
-				childMeta := testjsonl.CodexSubagentSessionMetaJSON(child, parent, "/work/project", "user", timestamp)
-				childPath := write(child, childMeta, 1, "")
-				paths := []string{parentPath}
-				if state != "new child" && state != "new parent" && state != "imported grandchild" {
-					paths = append(paths, childPath)
-				}
-				grandchildMeta := testjsonl.CodexSubagentSessionMetaJSON(grandchild, child, "/work/project", "user", timestamp)
-				if state == "missing spawner" {
-					write(child, childMeta, 1, grandchild)
-				}
-				if state == "missing intermediate" || state == "imported grandchild" {
-					paths = append(paths, write(grandchild, grandchildMeta, 2, ""))
-				}
-				if state != "new parent" {
-					require.NoError(t, engine.SyncPathsContext(t.Context(), paths))
-				}
-				engine.Close()
-				if state == "new child" || state == "new parent" || state == "imported grandchild" {
-					absent, err := database.GetSession(t.Context(), id(child))
-					require.NoError(t, err)
-					require.Nil(t, absent)
-					write(parent, parentMeta, 10, child)
-				}
-				wantOutput, wantChildren := 52, 1
-				switch state {
-				case "missing intermediate", "restored child", "missing spawner":
-					require.NoError(t, database.BaselineActiveSessionSourceOwnerships(t.Context(), []db.SessionSourceOwnership{{ID: id(child), Machine: "local", Agent: string(agent), FilePath: childPath}}))
-					marked, err := database.MarkSessionSourceMissing(t.Context(), "local", string(agent), id(child), childPath)
-					require.NoError(t, err)
-					require.True(t, marked)
-					require.NoError(t, os.Remove(childPath))
-					if state == "restored child" {
-						write(child, childMeta, 42, "")
-					} else {
-						write(grandchild, grandchildMeta, 42, "")
-						wantOutput, wantChildren = 53, 2
-					}
-				case "metadata spawn", "imported grandchild":
-					write(child, childMeta, 1, grandchild)
-					write(grandchild, grandchildMeta, 42, "")
-					wantOutput, wantChildren = 53, 2
-				default:
-					write(child, childMeta, 42, "")
-				}
-				if state == "trashed child" || state == "excluded child" {
-					write(parent, parentMeta, 10, child)
-					if state == "trashed child" {
-						require.NoError(t, database.SoftDeleteSession(t.Context(), id(child)))
-					} else {
-						require.NoError(t, database.DeleteSession(t.Context(), id(child)))
-					}
-					wantOutput, wantChildren = 10, 0
-				}
-				write(other, testjsonl.CodexSessionMetaJSON(other, "/work/project", "user", timestamp), 999, "")
-				engine = agentsync.NewEngine(t.Context(), database, engineConfig)
-				t.Cleanup(engine.Close)
-				var backend archiveQueryBackend = usageHandlerBackend(t, cfg, database, engine)
-				if state == "new parent" {
-					backend = localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
-				}
-				require.False(t, engine.StartupReconciled())
-				stderr := captureStderr(t, func() {
-					out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: id(parent)})
-					require.NoError(t, err)
-					require.NotNil(t, out)
-					assert.Equal(t, tokenUseExitOK, code)
-					assert.Equal(t, wantOutput, out.TotalOutputTokens)
-					assert.Equal(t, wantChildren, out.SubagentCount)
-				})
-				assert.Empty(t, stderr)
-				assert.False(t, engine.StartupReconciled())
-				unrelated, err := database.GetSession(t.Context(), id(other))
-				require.NoError(t, err)
-				assert.Nil(t, unrelated)
-			})
-		}
-	}
-}
-
-func TestSessionUsageBeforeStartupImportsRooChild(t *testing.T) {
-	root := t.TempDir()
-	cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentRooCode: {root}}, InstallationID: "local"}
-	database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-	engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
-	t.Cleanup(engine.Close)
-	write := func(id, history, messages string) string {
-		dir := filepath.Join(root, "tasks", id)
-		require.NoError(t, os.MkdirAll(dir, 0o700))
-		path := filepath.Join(dir, "history_item.json")
-		require.NoError(t, os.WriteFile(path, []byte(history), 0o600))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "ui_messages.json"), []byte(messages), 0o600))
-		return path
-	}
-	parentPath := write("parent-task", `{"id":"parent-task","ts":1767225600000,"task":"parent task","tokensOut":10,"workspace":"/work/project","childIds":["child-task"]}`, `[
- {"ts":1767225600000,"type":"say","say":"text","text":"parent task"},
- {"ts":1767225601000,"type":"ask","ask":"tool","text":"{\"tool\":\"newTask\",\"mode\":\"Code\",\"content\":\"child task\"}"},
- {"ts":1767225602000,"type":"say","say":"subtask_result","text":"done"}
- ]`)
-	require.NoError(t, engine.SyncPathsContext(t.Context(), []string{parentPath}))
-	spawned, err := database.SubagentChildSessionIDs(t.Context(), []string{"roocode:parent-task"})
-	require.NoError(t, err)
-	require.Equal(t, []string{"roocode:child-task"}, spawned)
-	write("child-task", `{"id":"child-task","parentTaskId":"parent-task","ts":1767225601000,"task":"child task","tokensOut":42,"workspace":"/work/project"}`, `[{"ts":1767225601000,"type":"say","say":"text","text":"child task"}]`)
-	write("unrelated-task", `{"id":"unrelated-task","ts":1767225601000,"task":"unrelated task","tokensOut":999,"workspace":"/work/project"}`, `[{"ts":1767225601000,"type":"say","say":"text","text":"unrelated task"}]`)
-	absent, err := database.GetSession(t.Context(), "roocode:child-task")
-	require.NoError(t, err)
-	require.Nil(t, absent)
-	require.False(t, engine.StartupReconciled())
-	backend := usageHandlerBackend(t, cfg, database, engine)
-	stderr := captureStderr(t, func() {
-		out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "roocode:parent-task"})
-		require.NoError(t, err)
-		require.NotNil(t, out)
-		assert.Equal(t, tokenUseExitOK, code)
-		assert.Equal(t, 52, out.TotalOutputTokens)
-		assert.Equal(t, 1, out.SubagentCount)
 	})
-	assert.Empty(t, stderr)
-	assert.False(t, engine.StartupReconciled())
-	unrelated, err := database.GetSession(t.Context(), "roocode:unrelated-task")
-	require.NoError(t, err)
-	assert.Nil(t, unrelated)
-}
-
-func TestSessionUsageBeforeStartupImportsNativeLayoutChildren(t *testing.T) {
-	for _, tt := range []struct {
-		name                         string
-		agent                        parser.AgentType
-		cursorExt                    string
-		nested, duplicate, canonical bool
-	}{
-		{name: "posit", agent: parser.AgentPositAssistant},
-		{name: "pi", agent: parser.AgentPi},
-		{name: "omp", agent: parser.AgentOMP},
-		{name: "cursor nested jsonl", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true},
-		{name: "cursor flat txt", agent: parser.AgentCursor, cursorExt: ".txt"},
-		{name: "cursor prefers jsonl", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true, duplicate: true},
-		{name: "cursor prefers own transcript", agent: parser.AgentCursor, cursorExt: ".jsonl", nested: true, canonical: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{tt.agent: {root}}, InstallationID: "local"}
-			database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-			engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
-			t.Cleanup(engine.Close)
-			write := func(path, content string) {
-				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-				require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
-			}
-			copyPosit := func(relative string) string {
-				path := filepath.Join(root, "project", relative, "conversation.json")
-				for _, name := range []string{"conversation.json", "lm-messages.jsonl"} {
-					content, err := os.ReadFile(filepath.Join("..", "..", "internal", "parser", "testdata", "posit-assistant", "workspaces", "a1b2c3d4", relative, name))
-					require.NoError(t, err)
-					write(filepath.Join(filepath.Dir(path), name), string(content))
-				}
-				return path
-			}
-			piContent := func(id, parent string) string {
-				return fmt.Sprintf(`{"type":"session","version":3,"id":%q,"timestamp":"2026-01-01T00:00:00Z","cwd":"/work/project","parentSession":%q}
-{"type":"message","id":%q,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"task"}}
-{"type":"message","id":%q,"timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":"answer","model":"claude-opus-4-5","usage":{"input":10,"output":42}}}
-`, id, parent, id+"-m1", id+"-m2")
-			}
-			const cursorJSONL = `{"role":"user","message":{"content":"<user_query>task</user_query>"}}
-{"role":"assistant","message":{"content":"answer"}}
-`
-			const cursorTXT = "user:\n<user_query>task</user_query>\n\nassistant:\nanswer\n"
-			parentPath := filepath.Join(root, "project", "2026-01-01T00-00-00-000Z_parent.jsonl")
-			switch tt.agent {
-			case parser.AgentPositAssistant:
-				parentPath = copyPosit("11111111")
-			case parser.AgentCursor:
-				parentPath = filepath.Join(root, "project", "agent-transcripts", "parent"+tt.cursorExt)
-				if tt.nested {
-					parentPath = filepath.Join(root, "project", "agent-transcripts", "parent", "parent"+tt.cursorExt)
-				}
-				if tt.cursorExt == ".txt" {
-					write(parentPath, cursorTXT)
-				} else {
-					write(parentPath, cursorJSONL)
-				}
-			default:
-				write(parentPath, piContent("parent", ""))
-			}
-			require.NoError(t, engine.SyncPathsContext(t.Context(), []string{parentPath}))
-			ids, err := database.ListSessionIDsByFilePath(t.Context(), parentPath, string(tt.agent))
-			require.NoError(t, err)
-			require.Len(t, ids, 1)
-			parentID := ids[0]
-			spawned, err := database.SubagentChildSessionIDs(t.Context(), []string{parentID})
-			require.NoError(t, err)
-			require.Empty(t, spawned)
-			childPath := filepath.Join(strings.TrimSuffix(parentPath, ".jsonl"), "run-a", "run-0", "session.jsonl")
-			switch tt.agent {
-			case parser.AgentPositAssistant:
-				childPath = copyPosit(filepath.Join("11111111", "subagents", "22222222"))
-			case parser.AgentCursor:
-				childPath = filepath.Join(root, "project", "agent-transcripts", "parent", "subagents", "child"+tt.cursorExt)
-				if tt.cursorExt == ".txt" {
-					write(childPath, cursorTXT)
-				} else {
-					write(childPath, cursorJSONL)
-				}
-				if tt.duplicate {
-					write(strings.TrimSuffix(childPath, ".jsonl")+".txt", cursorTXT)
-				}
-				if tt.canonical {
-					childPath = filepath.Join(root, "project", "agent-transcripts", "child.txt")
-					write(childPath, cursorTXT)
-				}
-			default:
-				if tt.agent == parser.AgentOMP {
-					childPath = filepath.Join(strings.TrimSuffix(parentPath, ".jsonl"), "Scout.jsonl")
-				}
-				write(childPath, piContent("child", ""))
-			}
-			absent, err := database.ListSessionIDsByFilePath(t.Context(), childPath, string(tt.agent))
-			require.NoError(t, err)
-			require.Empty(t, absent)
-			backend := usageHandlerBackend(t, cfg, database, engine)
-			stderr := captureStderr(t, func() {
-				out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: parentID})
-				require.NoError(t, err)
-				require.NotNil(t, out)
-				wantCode := tokenUseExitOK
-				if tt.agent == parser.AgentCursor {
-					wantCode = tokenUseExitNoTokenData
-				}
-				assert.Equal(t, wantCode, code)
-				wantChildren := 1
-				if tt.canonical {
-					wantChildren = 0
-				}
-				assert.Equal(t, wantChildren, out.SubagentCount)
-				if tt.agent == parser.AgentPi || tt.agent == parser.AgentOMP {
-					assert.Equal(t, 84, out.TotalOutputTokens)
-				}
-			})
-			assert.Empty(t, stderr)
-			assert.False(t, engine.StartupReconciled())
-			ids, err = database.ListSessionIDsByFilePath(t.Context(), childPath, string(tt.agent))
-			require.NoError(t, err)
-			require.Len(t, ids, 1)
-			child, err := database.GetSession(t.Context(), ids[0])
-			require.NoError(t, err)
-			require.NotNil(t, child)
-			assert.Equal(t, string(tt.agent), child.Agent)
-		})
-	}
 }

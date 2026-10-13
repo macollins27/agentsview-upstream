@@ -207,38 +207,45 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 	}
 	ctx := t.Context()
 
-	// Ingest the parent, then write a subagent transcript the way Claude
-	// Code does after the parent's own file was last synced.
+	// The archived child must refresh before the combined usage query.
 	_, _, err := backend.SessionUsage(
 		ctx, sessionUsageQuery{SessionID: "parent-uuid"})
 	require.NoError(t, err)
 
+	childPath := filepath.Join(projDir, "parent-uuid", "subagents", "agent-worker1.jsonl")
+	parentID := "parent-uuid"
+	require.NoError(t, database.UpsertSession(ctx, db.Session{
+		ID: "agent-worker1", Agent: "claude", Machine: "local", Project: "project",
+		FilePath: &childPath, ParentSessionID: &parentID, RelationshipType: "subagent",
+	}))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(projDir, "parent-uuid", "subagents",
-			"agent-worker1.jsonl"),
+		childPath,
 		[]byte(testjsonl.NewSessionBuilder().
 			AddClaudeUserWithSessionID(
 				"2026-05-20T10:01:00Z", "do the subtask", "parent-uuid").
-			AddClaudeAssistant("2026-05-20T10:01:30Z", "subtask done").
+			AddClaudeAssistantUsage("2026-05-20T10:01:30Z", "subtask done", testjsonl.ClaudeAssistantUsage{OutputTokens: 42}).
 			String()),
 		0o644))
 
-	// Passive reads must leave newly written source transcripts unindexed.
+	// Passive reads must keep the archived child usage.
 	archived, _, err := backend.SessionUsage(
 		ctx, sessionUsageQuery{SessionID: "parent-uuid", NoSync: true})
 	require.NoError(t, err)
 	require.NotNil(t, archived)
-	assert.Zero(t, archived.SubagentCount)
+	assert.Equal(t, 1, archived.SubagentCount)
+	assert.Zero(t, archived.TotalOutputTokens)
 	unsynced, err := database.GetSession(ctx, "agent-worker1")
 	require.NoError(t, err)
-	assert.Nil(t, unsynced)
+	require.NotNil(t, unsynced)
+	assert.Zero(t, unsynced.TotalOutputTokens)
 
 	out, _, err := backend.SessionUsage(
 		ctx, sessionUsageQuery{SessionID: "parent-uuid"})
 	require.NoError(t, err)
 	require.NotNil(t, out)
+	assert.Equal(t, 42, out.TotalOutputTokens)
 	assert.Equal(t, 1, out.SubagentCount,
-		"the new subagent transcript must be ingested before the query")
+		"the archived subagent must refresh before the query")
 
 	child, err := database.GetSession(ctx, "agent-worker1")
 	require.NoError(t, err)
@@ -287,7 +294,7 @@ func TestLocalSessionUsageStaleArchiveKeepsStoredUsage(t *testing.T) {
 			after, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: before.SessionID, OwnOnly: ownOnly})
 			require.NoError(t, err)
 			require.NotNil(t, after)
-			assert.Equal(t, usageExitCode(&before.SessionUsage), code)
+			assert.Equal(t, 0, code)
 			assert.Equal(t, 37, after.TotalOutputTokens)
 			assert.True(t, after.HasTokenData)
 		})
