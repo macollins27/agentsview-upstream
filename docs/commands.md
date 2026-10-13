@@ -981,8 +981,9 @@ refresh, the command shows stored usage with a warning to run `agentsview resync
 A busy sync or maintenance pass returns stored usage with a warning that the
 aggregate may be incomplete.
 
-Unknown IDs return "session not found" and exit 2 until daemon ingestion imports
-them. `--own-only` refreshes only the named transcript and excludes subagents.
+A session the archive does not have yet is imported from its source before the
+usage lookup. IDs with no source return "session not found" and exit 2.
+`--own-only` refreshes only the named transcript and excludes subagents.
 Servers below API 11 skip targeted refresh with a warning to restart or upgrade.
 Servers newer than this client require a client upgrade before querying usage.
 Statusline waits for startup sync with a 30-second deadline.

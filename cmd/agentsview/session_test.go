@@ -1569,14 +1569,85 @@ func TestSessionUsage_ServerFlagRejectsCombinedUsageFromOlderDaemon(
 	assert.Empty(t, reqs.UsagePath)
 }
 
-func TestSessionUsage_MissingSessionDoesNotSync(t *testing.T) {
-	ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a"})
-	backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL, Runtime: daemonRuntimeFromTestURL(t, ts.URL)}}
-	out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "codex:missing"})
-	require.NoError(t, err)
-	assert.Nil(t, out)
-	assert.Equal(t, tokenUseExitNotFound, code)
-	assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
+// A daemon started without startup ingestion has not imported new sessions,
+// so a missing session is refreshed from its source before giving up.
+func TestSessionUsage_MissingSessionRefreshesFromSource(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		apiVersion int
+		syncStatus int
+		noSync     bool
+		ownOnly    bool
+		wantSync   bool
+		wantCode   int
+	}{
+		{"imported", server.APIVersion, http.StatusOK, false, false, true, tokenUseExitOK},
+		{"imported own only", server.APIVersion, http.StatusOK, false, true, true, tokenUseExitOK},
+		{"no source", server.APIVersion, http.StatusInternalServerError, false, false, true, tokenUseExitNotFound},
+		{"no sync", server.APIVersion, http.StatusOK, true, false, false, tokenUseExitNotFound},
+		{"older server", server.TargetedSessionSyncAPIVersion - 1, http.StatusOK, false, false, false, tokenUseExitNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const id = "codex:new-session"
+			imported := false
+			var syncInputs []service.SyncInput
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/sessions/" + id:
+					if !imported {
+						http.NotFound(w, r)
+						return
+					}
+					writeJSONResponse(w, `{"id":"codex:new-session","agent":"codex"}`)
+				case "/api/v1/sessions/sync":
+					var in service.SyncInput
+					if !assert.NoError(t, json.UnmarshalRead(r.Body, &in)) {
+						return
+					}
+					syncInputs = append(syncInputs, in)
+					if tc.syncStatus != http.StatusOK {
+						w.WriteHeader(tc.syncStatus)
+						writeJSONResponse(w, `{"detail":"source file not found for codex:new-session"}`)
+						return
+					}
+					imported = true
+					writeJSONResponse(w, `{"id":"codex:new-session","agent":"codex"}`)
+				case "/api/v1/sessions/" + id + "/usage":
+					writeJSONResponse(w, `{"session_id":"codex:new-session","agent":"codex","has_token_data":true,"total_output_tokens":42}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(ts.Close)
+			rt := daemonRuntimeFromTestURL(t, ts.URL)
+			rt.API = tc.apiVersion
+			backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL, Runtime: rt}}
+			var out *sessionUsageOutput
+			var code int
+			stderr := captureStderr(t, func() {
+				var err error
+				out, code, err = backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: id, NoSync: tc.noSync, OwnOnly: tc.ownOnly})
+				require.NoError(t, err)
+			})
+			assert.Equal(t, tc.wantCode, code)
+			if tc.wantCode == tokenUseExitOK {
+				require.NotNil(t, out)
+				assert.Equal(t, 42, out.TotalOutputTokens)
+			} else {
+				assert.Nil(t, out)
+				assert.Contains(t, stderr, "session not found: "+id)
+			}
+			if tc.wantSync {
+				// One refresh imports the session; it is not refreshed again.
+				assert.Equal(t, []service.SyncInput{{ID: id, Subagents: !tc.ownOnly, UsageRefresh: true}}, syncInputs)
+			} else {
+				assert.Empty(t, syncInputs)
+			}
+			if tc.syncStatus != http.StatusOK {
+				assert.Contains(t, stderr, "source file not found")
+			}
+		})
+	}
 }
 
 func TestSessionUsage_NewerServerRejectsUsage(t *testing.T) {

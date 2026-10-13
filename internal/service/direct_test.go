@@ -1094,6 +1094,31 @@ func TestDirectBackend_Sync_MissingNonVibeIDDoesNotReturnSamePathSession(t *test
 	assert.Contains(t, err.Error(), `sync: session "requested" was not found after sync`)
 }
 
+// Usage refresh imports a session that startup ingestion has not reached.
+func TestDirectBackend_Sync_UsageRefreshImportsUnarchivedSession(t *testing.T) {
+	for _, subagents := range []bool{true, false} {
+		t.Run(fmt.Sprint("subagents=", subagents), func(t *testing.T) {
+			claudeDir := t.TempDir()
+			d := dbtest.OpenTestDB(t)
+			engine := sync.NewEngine(t.Context(), d, sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {claudeDir}},
+				Machine:   "local",
+			})
+			t.Cleanup(engine.Close)
+			svc := service.NewDirectBackend(d, engine)
+			projectDir := filepath.Join(claudeDir, "proj")
+			require.NoError(t, os.MkdirAll(projectDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(projectDir, "new-session.jsonl"),
+				[]byte(testjsonl.ClaudeUserJSON("hello", "2026-06-17T12:00:00Z")+"\n"), 0o644))
+
+			detail, err := svc.Sync(t.Context(), service.SyncInput{ID: "new-session", Subagents: subagents, UsageRefresh: true})
+			require.NoError(t, err)
+			require.NotNil(t, detail)
+			assert.Equal(t, "new-session", detail.ID)
+		})
+	}
+}
+
 // TestDirectBackend_Watch_UnknownID_Errors verifies that Watch
 // on a missing session returns a clear "session not found" error
 // instead of producing an indefinite heartbeat channel.

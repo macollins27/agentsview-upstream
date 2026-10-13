@@ -197,17 +197,26 @@ func httpSessionUsageData(
 	if apiVersion > server.APIVersion {
 		return nil, tokenUseExitErr, fmt.Errorf("server API version %d is newer than this client; upgrade agentsview before querying session usage", apiVersion)
 	}
-	resolvedID, err := resolveServiceSessionID(
-		ctx, servicehttp.NewHTTPBackend(baseURL, token, false, ""), sessionID,
-	)
+	backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
+	resolvedID, err := resolveServiceSessionID(ctx, backend, sessionID)
+	refreshed := false
+	if errors.Is(err, errSessionNotFound) && !query.NoSync && apiVersion >= server.TargetedSessionSyncAPIVersion {
+		// Usage lookups skip startup ingestion, so a session that ended
+		// before the daemon started has not been imported yet.
+		detail, syncErr := backend.Sync(ctx, service.SyncInput{ID: sessionID, Subagents: !query.OwnOnly, UsageRefresh: true})
+		if syncErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not import session from its source: %v\n", syncErr)
+		} else if detail != nil {
+			resolvedID, err, refreshed = detail.ID, nil, true
+		}
+	}
 	if err != nil {
 		if errors.Is(err, errSessionNotFound) {
 			return sessionUsageNotFound(sessionID)
 		}
 		return nil, tokenUseExitErr, err
 	}
-	if !query.NoSync && (!query.OwnOnly || apiVersion >= server.TargetedSessionSyncAPIVersion) {
-		backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
+	if !refreshed && !query.NoSync && (!query.OwnOnly || apiVersion >= server.TargetedSessionSyncAPIVersion) {
 		var syncErr error
 		if apiVersion < server.TargetedSessionSyncAPIVersion {
 			syncErr = fmt.Errorf("server API version %d predates targeted session refresh; run agentsview daemon restart or upgrade the server", apiVersion)
