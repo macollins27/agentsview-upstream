@@ -259,3 +259,40 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 	require.NotNil(t, own)
 	assert.Zero(t, own.SubagentCount)
 }
+
+func TestLocalSessionUsageStaleArchiveKeepsStoredUsage(t *testing.T) {
+	cfg := testConfigWithClaudeFixture(t)
+	sourcePath := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj1", "session1.jsonl")
+	require.NoError(t, os.WriteFile(sourcePath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser("2026-05-20T10:00:00Z", "original").
+		AddClaudeAssistantUsage("2026-05-20T10:00:05Z", "original usage", testjsonl.ClaudeAssistantUsage{OutputTokens: 37}).String()), 0o644))
+	database, err := db.Open(t.Context(), cfg.DBPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+	backend := localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
+	before, _, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session1"})
+	require.NoError(t, err)
+	require.NotNil(t, before)
+	require.NoError(t, os.WriteFile(sourcePath, []byte(testjsonl.NewSessionBuilder().
+		AddClaudeUser("2026-05-20T10:00:00Z", "changed").
+		AddClaudeAssistantUsage("2026-05-20T10:00:05Z", "changed usage", testjsonl.ClaudeAssistantUsage{OutputTokens: 999}).String()), 0o644))
+	require.NoError(t, database.Close())
+	markArchiveStale(t, cfg.DBPath)
+	database, err = db.Open(t.Context(), cfg.DBPath)
+	require.NoError(t, err)
+	require.True(t, database.NeedsResync())
+	backend.database = database
+	for _, ownOnly := range []bool{false, true} {
+		stderr := captureStderr(t, func() {
+			after, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: before.SessionID, OwnOnly: ownOnly})
+			require.NoError(t, err)
+			require.NotNil(t, after)
+			assert.Equal(t, usageExitCode(&before.SessionUsage), code)
+			assert.Equal(t, 37, after.TotalOutputTokens)
+			assert.True(t, after.HasTokenData)
+		})
+		assert.Contains(t, stderr, "run agentsview resync")
+		assert.Contains(t, stderr, "showing stored usage")
+		assert.True(t, database.NeedsResync())
+	}
+}

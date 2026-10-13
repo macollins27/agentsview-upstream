@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -234,11 +233,7 @@ func (b daemonArchiveQueryBackend) SessionUsage(
 	ctx context.Context,
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
-	out, code, err := httpSessionUsageData(ctx, b.tr, b.authToken, query)
-	if errors.Is(err, errSessionNotFound) {
-		return sessionUsageNotFound(query.SessionID)
-	}
-	return out, code, err
+	return httpSessionUsageData(ctx, b.tr, b.authToken, query)
 }
 
 func (b daemonArchiveQueryBackend) MachineLabels(
@@ -322,7 +317,11 @@ func (b localArchiveQueryBackend) SessionUsage(
 		ctx, b.database, b.cfg.AgentDirs, query.SessionID,
 	)
 
-	if known && !b.skipFreshData && !query.NoSync {
+	stale := b.database.NeedsResync()
+	if stale && !b.skipFreshData && !query.NoSync {
+		fmt.Fprintln(os.Stderr, "warning: archive needs resync; run agentsview resync; showing stored usage, which may be incomplete")
+	}
+	if known && !stale && !b.skipFreshData && !query.NoSync {
 		engine := sync.NewEngine(ctx, b.database, sync.EngineConfig{
 			AgentDirs:               b.cfg.AgentDirs,
 			SourceMachines:          b.cfg.SourceMachines,

@@ -914,9 +914,11 @@ did before.
 
 Before querying, the local backend refreshes the session's own transcript and
 the `agent-*.jsonl` files under its `subagents/` directory, so a session that
-just finished reports complete numbers. With `--own-only`, HTTP/daemon queries
-read stored usage without refreshing; direct queries without a daemon refresh
-the named transcript.
+just finished reports complete numbers. With `--own-only`, queries refresh only
+the named transcript. Stale archives skip the refresh and show stored usage with
+a warning to run `agentsview resync`. Servers below API 11 skip targeted refresh
+with a warning to restart or upgrade. Servers newer than this client require a
+client upgrade before querying usage.
 
 Pass `--no-sync` to read archived usage without refreshing source transcripts.
 This preserves the full subagent rollup and the exit codes above; combine it

@@ -10161,17 +10161,25 @@ func TestTargetedRefreshWaitsForBriefContention(t *testing.T) {
 }
 
 func TestTargetedRefreshReturnsBusyAfterBoundedWait(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
-		t.Cleanup(engine.Close)
-		engine.syncMu.Lock()
-		defer engine.syncMu.Unlock()
-
-		require.ErrorIs(t,
-			engine.SyncSingleSessionForUsageContext(t.Context(), "parent"),
-			ErrSyncInProgress,
-		)
-	})
+	for _, s3 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("s3=%t", s3), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{Machine: "local"})
+				t.Cleanup(engine.Close)
+				engine.syncMu.Lock()
+				defer engine.syncMu.Unlock()
+				start := time.Now()
+				var err error
+				if s3 {
+					err = engine.SyncS3SubagentTranscriptsContext(t.Context(), "parent", parser.AgentClaude, nil)
+				} else {
+					err = engine.SyncSingleSessionForUsageContext(t.Context(), "parent")
+				}
+				require.ErrorIs(t, err, ErrSyncInProgress)
+				assert.Equal(t, 250*time.Millisecond, time.Since(start))
+			})
+		})
+	}
 }
 
 func TestSubagentRefreshMarksContentionAfterParentAsIncomplete(t *testing.T) {

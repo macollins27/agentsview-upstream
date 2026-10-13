@@ -109,11 +109,7 @@ func sessionUsageDataForCommand(
 			}
 			tr.Runtime = &DaemonRuntime{API: apiVersion}
 		}
-		out, code, err := httpSessionUsageData(ctx, tr, token, query)
-		if errors.Is(err, errSessionNotFound) {
-			return sessionUsageNotFound(sessionID)
-		}
-		return out, code, err
+		return httpSessionUsageData(ctx, tr, token, query)
 	}
 	cfg, err := config.LoadPFlags(cmd.Flags())
 	if err != nil {
@@ -188,34 +184,36 @@ func httpSessionUsageData(
 	}
 	baseURL := tr.URL
 	sessionID := query.SessionID
+	var apiVersion int
+	if tr.Runtime != nil {
+		apiVersion = tr.Runtime.API
+	} else {
+		capabilities, err := servicehttp.ProbeHTTPServerCapabilities(ctx, baseURL, token)
+		if err != nil {
+			return nil, tokenUseExitErr, err
+		}
+		apiVersion = capabilities.APIVersion
+	}
+	if apiVersion > server.APIVersion {
+		return nil, tokenUseExitErr, fmt.Errorf("server API version %d is newer than this client; upgrade agentsview before querying session usage", apiVersion)
+	}
 	resolvedID, err := resolveServiceSessionID(
 		ctx, servicehttp.NewHTTPBackend(baseURL, token, false, ""), sessionID,
 	)
 	if err != nil {
 		if errors.Is(err, errSessionNotFound) {
-			return nil, tokenUseExitNotFound, errSessionNotFound
+			return sessionUsageNotFound(sessionID)
 		}
 		return nil, tokenUseExitErr, err
 	}
-	if !query.NoSync && !query.OwnOnly {
+	if !query.NoSync {
 		backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
 		var syncErr error
-		var apiVersion int
-		if tr.Runtime != nil {
-			apiVersion = tr.Runtime.API
-		} else {
-			var capabilities servicehttp.HTTPServerCapabilities
-			capabilities, syncErr = servicehttp.ProbeHTTPServerCapabilities(ctx, baseURL, token)
-			apiVersion = capabilities.APIVersion
-		}
-		if syncErr == nil && apiVersion < server.TargetedSessionSyncAPIVersion {
+		if apiVersion < server.TargetedSessionSyncAPIVersion {
 			syncErr = fmt.Errorf("server API version %d predates targeted session refresh; run agentsview daemon restart or upgrade the server", apiVersion)
 		}
-		if syncErr == nil && apiVersion > server.APIVersion {
-			syncErr = fmt.Errorf("server API version %d is newer than this client; upgrade agentsview before refreshing sessions", apiVersion)
-		}
 		if syncErr == nil {
-			_, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: true})
+			_, syncErr = backend.Sync(ctx, service.SyncInput{ID: resolvedID, Subagents: !query.OwnOnly})
 		}
 		if syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
 			fmt.Fprintf(os.Stderr, "warning: sync failed: %v; showing stored usage, which may be incomplete\n", syncErr)
@@ -241,7 +239,7 @@ func httpSessionUsageData(
 	}
 	resp := response.HTTPResponse
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, tokenUseExitNotFound, errSessionNotFound
+		return sessionUsageNotFound(sessionID)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body := response.Body

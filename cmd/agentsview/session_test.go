@@ -1622,6 +1622,7 @@ func TestSessionUsage_ServerFlagOwnOnlySkipsSubagents(t *testing.T) {
 		"--own-only must not ask the daemon for subagent usage")
 	assert.Empty(t, reqs.SyncInput.ID)
 	assert.Equal(t, []string{
+		"/api/v1/version",
 		"/api/v1/sessions/remote-session",
 		"/api/v1/sessions/remote-session/usage",
 	}, reqs.RequestPath)
@@ -1679,24 +1680,86 @@ func TestSessionUsage_MissingSessionDoesNotSync(t *testing.T) {
 	assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
 }
 
-func TestSessionUsage_NewerServerSkipsRefresh(t *testing.T) {
-	for _, runtime := range []bool{false, true} {
-		t.Run(strconv.FormatBool(runtime), func(t *testing.T) {
-			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a", apiVersion: server.APIVersion + 1})
-			tr := transport{URL: ts.URL}
-			if runtime {
-				tr.Runtime = &DaemonRuntime{API: server.APIVersion + 1}
-			}
+func TestSessionUsage_NewerServerRejectsUsage(t *testing.T) {
+	for _, mode := range []string{"probe", "runtime", "explicit server"} {
+		for _, query := range []sessionUsageQuery{
+			{SessionID: "codex:session-a"},
+			{SessionID: "codex:session-a", NoSync: true},
+			{SessionID: "codex:session-a", OwnOnly: true},
+			{SessionID: "codex:session-a", OwnOnly: true, NoSync: true},
+		} {
+			t.Run(fmt.Sprintf("%s/own=%t/no-sync=%t", mode, query.OwnOnly, query.NoSync), func(t *testing.T) {
+				newAgentDataDir(t)
+				ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: query.SessionID, apiVersion: server.APIVersion + 1})
+				var out *sessionUsageOutput
+				var code int
+				var err error
+				if mode == "explicit server" {
+					args := []string{"session", "usage", query.SessionID, "--server", ts.URL}
+					if query.OwnOnly {
+						args = append(args, "--own-only")
+					}
+					if query.NoSync {
+						args = append(args, "--no-sync")
+					}
+					out, code, err = sessionUsageDataForCommand(sessionUsageCommand(t, args...), query.SessionID)
+				} else {
+					tr := transport{URL: ts.URL}
+					if mode == "runtime" {
+						tr.Runtime = &DaemonRuntime{API: server.APIVersion + 1}
+					}
+					out, code, err = httpSessionUsageData(t.Context(), tr, "", query)
+				}
+				require.ErrorContains(t, err, "is newer than this client; upgrade agentsview")
+				assert.Nil(t, out)
+				assert.Equal(t, tokenUseExitErr, code)
+				if mode == "runtime" {
+					assert.Empty(t, reqs.RequestPath)
+				} else {
+					assert.Equal(t, []string{"/api/v1/version"}, reqs.RequestPath)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionUsage_OwnOnlyRefreshesParent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version int
+		status  int
+		warning string
+	}{
+		{"current", server.APIVersion, 0, ""},
+		{"busy", server.APIVersion, http.StatusServiceUnavailable, "warning: sync failed"},
+		{"stale", server.APIVersion, http.StatusConflict, "run agentsview resync"},
+		{"older", 10, 0, "predates targeted session refresh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newAgentDataDir(t)
+			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: "codex:session-a", apiVersion: tc.version, syncStatus: tc.status})
 			stderr := captureStderr(t, func() {
-				out, code, err := httpSessionUsageData(t.Context(), tr, "", sessionUsageQuery{SessionID: "codex:session-a"})
+				cmd := sessionUsageCommand(t, "session", "usage", "codex:session-a", "--server", ts.URL, "--own-only")
+				out, code, err := sessionUsageDataForCommand(cmd, "codex:session-a")
 				require.NoError(t, err)
 				require.NotNil(t, out)
-				assert.Equal(t, tokenUseExitOK, code)
 				assert.Equal(t, 42, out.TotalOutputTokens)
+				assert.Equal(t, tokenUseExitOK, code)
 			})
-			assert.Contains(t, stderr, "is newer than this client; upgrade agentsview")
-			assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
-			assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
+			if tc.warning != "" {
+				assert.Contains(t, stderr, tc.warning)
+			} else {
+				assert.Empty(t, stderr)
+			}
+			assert.False(t, reqs.SyncInput.Subagents)
+			assert.Equal(t, "breakdown=true", reqs.UsageQuery)
+			if tc.version >= server.TargetedSessionSyncAPIVersion {
+				assert.Equal(t, "codex:session-a", reqs.SyncInput.ID)
+				assert.Equal(t, []string{"/api/v1/version", "/api/v1/sessions/codex:session-a", "/api/v1/sessions/sync", "/api/v1/sessions/codex:session-a/usage"}, reqs.RequestPath)
+			} else {
+				assert.Empty(t, reqs.SyncInput.ID)
+				assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
+			}
 		})
 	}
 }

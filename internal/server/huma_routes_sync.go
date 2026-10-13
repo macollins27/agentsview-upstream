@@ -267,6 +267,7 @@ func (s *Server) humaTriggerSync(
 		if err != nil {
 			return nil, err
 		}
+		// General /sync keeps its in-process rebuild when no worker runner is configured.
 		if s.localSyncRunner != nil {
 			if err := s.rejectStaleArchiveForSync(); err != nil {
 				return nil, err
