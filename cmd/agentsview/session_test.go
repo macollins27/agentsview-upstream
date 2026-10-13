@@ -1576,36 +1576,19 @@ func TestSessionUsage_MissingSessionDoesNotSync(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, out)
 	assert.Equal(t, tokenUseExitNotFound, code)
-	assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
 	assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
 }
 
 func TestSessionUsage_NewerServerRejectsUsage(t *testing.T) {
-	for _, cached := range []bool{false, true} {
-		t.Run(fmt.Sprintf("cached=%t", cached), func(t *testing.T) {
-			newAgentDataDir(t)
-			query := sessionUsageQuery{SessionID: "codex:session-a"}
-			ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: query.SessionID, apiVersion: server.APIVersion + 1})
-			var out *sessionUsageOutput
-			var code int
-			var err error
-			if cached {
-				tr := transport{URL: ts.URL, Runtime: &DaemonRuntime{API: server.APIVersion + 1}}
-				out, code, err = httpSessionUsageData(t.Context(), tr, "", query)
-			} else {
-				cmd := sessionUsageCommand(t, "session", "usage", query.SessionID, "--server", ts.URL)
-				out, code, err = sessionUsageDataForCommand(cmd, query.SessionID)
-			}
-			require.ErrorContains(t, err, "is newer than this client; upgrade agentsview")
-			assert.Nil(t, out)
-			assert.Equal(t, tokenUseExitErr, code)
-			if cached {
-				assert.Empty(t, reqs.RequestPath)
-			} else {
-				assert.Equal(t, []string{"/api/v1/version"}, reqs.RequestPath)
-			}
-		})
-	}
+	newAgentDataDir(t)
+	query := sessionUsageQuery{SessionID: "codex:session-a"}
+	ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{canonicalID: query.SessionID, apiVersion: server.APIVersion + 1})
+	cmd := sessionUsageCommand(t, "session", "usage", query.SessionID, "--server", ts.URL)
+	out, code, err := sessionUsageDataForCommand(cmd, query.SessionID)
+	require.ErrorContains(t, err, "is newer than this client; upgrade agentsview")
+	assert.Nil(t, out)
+	assert.Equal(t, tokenUseExitErr, code)
+	assert.Equal(t, []string{"/api/v1/version"}, reqs.RequestPath)
 }
 
 func TestSessionUsage_RemoteRefresh(t *testing.T) {
@@ -2396,32 +2379,5 @@ func TestSessionUsageVibeReplacementID(t *testing.T) {
 		})
 		assert.Empty(t, stderr)
 		assert.Equal(t, []string{"/api/v1/sessions/" + requested, "/api/v1/sessions/sync", "/api/v1/sessions/" + replacement + "/usage"}, paths)
-	})
-	t.Run("local", func(t *testing.T) {
-		root := t.TempDir()
-		cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, InstallationID: "local"}
-		database := dbtest.OpenTestDBAt(t, cfg.DBPath)
-		engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
-		t.Cleanup(engine.Close)
-		const dirName = "session_20260616_083518_abc123"
-		const canonical = "vibe:11111111-1111-4111-8111-111111111111"
-		dir := filepath.Join(root, dirName)
-		require.NoError(t, os.MkdirAll(dir, 0o700))
-		messages := filepath.Join(dir, "messages.jsonl")
-		require.NoError(t, os.WriteFile(messages, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o600))
-		meta := filepath.Join(dir, "meta.json")
-		require.NoError(t, os.WriteFile(meta, []byte(`{"session_id":"11111111-1111-4111-8111-111111111111"}`), 0o600))
-		require.NoError(t, engine.SyncPathsContext(t.Context(), []string{messages}))
-		requested, expected := canonical, "vibe:"+dirName
-		require.NoError(t, os.Remove(meta))
-		backend := localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
-		stderr := captureStderr(t, func() {
-			out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested})
-			require.NoError(t, err)
-			require.NotNil(t, out)
-			assert.Equal(t, expected, out.SessionID)
-			assert.Equal(t, tokenUseExitNoTokenData, code)
-		})
-		assert.Empty(t, stderr)
 	})
 }

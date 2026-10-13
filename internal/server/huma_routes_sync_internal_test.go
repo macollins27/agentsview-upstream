@@ -1824,24 +1824,6 @@ func TestHumaSyncSessionStaleArchive(t *testing.T) {
 	}
 }
 
-func TestHumaSyncSessionCanceledPreResyncReturnsNil(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	ran := false
-	f := newSyncRouteFixture(t, withStaleDB(), withLocalResyncRunner(
-		func(ctx context.Context, _ func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
-			require.NoError(t, ctx.Err())
-			ran = true
-			cancel()
-			return syncpkg.SyncStats{}, ctx.Err()
-		},
-	))
-	out, err := f.srv.humaSyncSession(ctx, &sessionSyncInput{Body: service.SyncInput{ID: "session"}})
-	assert.True(t, ran)
-	require.NoError(t, err)
-	assert.Nil(t, out)
-}
-
 type syncErrorSessionService struct {
 	service.SessionService
 	inputs []service.SyncInput
@@ -1865,16 +1847,33 @@ func TestHumaSyncSessionReportsIncompleteSubagentRefresh(t *testing.T) {
 }
 
 func TestHumaSyncSessionCanceledServiceSyncReturnsNil(t *testing.T) {
-	f := newSyncRouteFixture(t)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	out, err := f.srv.humaSyncSession(ctx, &sessionSyncInput{
-		Body: service.SyncInput{Path: filepath.Join(f.dir, "missing.jsonl")},
-	})
-
-	require.NoError(t, err)
-	assert.Nil(t, out)
+	for _, duringResync := range []bool{false, true} {
+		t.Run(fmt.Sprintf("duringResync=%t", duringResync), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ran := false
+			var options []syncRouteFixtureOption
+			if duringResync {
+				options = []syncRouteFixtureOption{withStaleDB(), withLocalResyncRunner(
+					func(ctx context.Context, _ func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+						require.NoError(t, ctx.Err())
+						ran = true
+						cancel()
+						return syncpkg.SyncStats{}, ctx.Err()
+					},
+				)}
+			} else {
+				cancel()
+			}
+			f := newSyncRouteFixture(t, options...)
+			out, err := f.srv.humaSyncSession(ctx, &sessionSyncInput{
+				Body: service.SyncInput{Path: filepath.Join(f.dir, "missing.jsonl")},
+			})
+			assert.Equal(t, duringResync, ran)
+			require.NoError(t, err)
+			assert.Nil(t, out)
+		})
+	}
 }
 
 func TestRunRemoteSyncRequestEmitsAfterRemoteOnlyWrites(t *testing.T) {

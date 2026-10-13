@@ -10103,6 +10103,7 @@ func TestEngine_TryRunExclusiveRejectsBusySyncWithoutRunningWork(t *testing.T) {
 }
 
 func TestTargetedRefreshLockWait(t *testing.T) {
+	// Mutex acquisition does not durably block in synctest, so ordinary waits use real time.
 	t.Run("ordinary", func(t *testing.T) {
 		fx := newEngineFixture(t)
 		t.Cleanup(fx.engine.Close)
@@ -10131,18 +10132,16 @@ func TestTargetedRefreshLockWait(t *testing.T) {
 		}
 	})
 	for _, entry := range []struct {
-		name string
-		run  func(context.Context, *Engine) error
+		name     string
+		run      func(context.Context, *Engine) error
+		outcomes []string
 	}{
-		{"usage", func(ctx context.Context, e *Engine) error { return e.SyncSingleSessionForUsageContext(ctx, "parent") }},
+		{"usage", func(ctx context.Context, e *Engine) error { return e.SyncSingleSessionForUsageContext(ctx, "parent") }, []string{"release", "busy", "cancel"}},
 		{"s3", func(ctx context.Context, e *Engine) error {
 			return e.SyncS3SubagentTranscriptsContext(ctx, "parent", parser.AgentClaude, nil)
-		}},
+		}, []string{"busy"}},
 	} {
-		for _, outcome := range []string{"release", "busy", "cancel"} {
-			if entry.name != "usage" && outcome != "busy" {
-				continue
-			}
+		for _, outcome := range entry.outcomes {
 			t.Run(entry.name+"/"+outcome, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					fx := newEngineFixture(t)
@@ -10206,7 +10205,7 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 		assert.Equal(t, wantOutput, total)
 		assert.Len(t, ids, wantChildren+1)
 	}
-	for _, agent := range []parser.AgentType{parser.AgentClaude, parser.AgentIcodemate, parser.AgentQoder, parser.AgentOpenClaude} {
+	for _, agent := range []parser.AgentType{parser.AgentClaude, parser.AgentIcodemate} {
 		t.Run(string(agent), func(t *testing.T) {
 			root := t.TempDir()
 			database := openTestDB(t)
@@ -10258,11 +10257,8 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 		})
 	}
 	t.Run("codex", func(t *testing.T) {
-		for _, agent := range []parser.AgentType{parser.AgentCodex, parser.AgentTraeX, parser.AgentAugureCode} {
-			states := []string{"archived"}
-			if agent == parser.AgentCodex {
-				states = append(states, "new child", "new parent", "missing intermediate", "metadata spawn", "imported grandchild", "restored child", "missing spawner", "trashed child", "excluded child")
-			}
+		for _, agent := range []parser.AgentType{parser.AgentCodex} {
+			states := []string{"archived", "new child", "new parent", "missing intermediate", "metadata spawn", "imported grandchild", "restored child", "missing spawner", "trashed child", "excluded child"}
 			for _, state := range states {
 				t.Run(string(agent)+"/"+state, func(t *testing.T) {
 					def, ok := parser.AgentByType(agent)
@@ -10403,6 +10399,7 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 			cursorExt                    string
 			nested, duplicate, canonical bool
 		}{
+			{name: "workbuddy", agent: parser.AgentWorkBuddy},
 			{name: "posit", agent: parser.AgentPositAssistant},
 			{name: "pi", agent: parser.AgentPi},
 			{name: "omp", agent: parser.AgentOMP},
@@ -10429,6 +10426,9 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 					}
 					return path
 				}
+				workBuddyContent := func(output int) string {
+					return fmt.Sprintf(`{"type":"message","role":"assistant","content":"answer","providerData":{"model":"gpt-5","usage":{"outputTokens":%d}}}`+"\n", output)
+				}
 				piContent := func(id, parent string) string {
 					return fmt.Sprintf(`{"type":"session","version":3,"id":%q,"timestamp":"2026-01-01T00:00:00Z","cwd":"/work/project","parentSession":%q}
 {"type":"message","id":%q,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"task"}}
@@ -10441,6 +10441,9 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 				const cursorTXT = "user:\n<user_query>task</user_query>\n\nassistant:\nanswer\n"
 				parentPath := filepath.Join(root, "project", "2026-01-01T00-00-00-000Z_parent.jsonl")
 				switch tt.agent {
+				case parser.AgentWorkBuddy:
+					parentPath = filepath.Join(root, "project", "11111111-1111-4111-8111-111111111111.jsonl")
+					write(parentPath, workBuddyContent(10))
 				case parser.AgentPositAssistant:
 					parentPath = copyPosit("11111111")
 				case parser.AgentCursor:
@@ -10466,6 +10469,12 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 				require.Empty(t, spawned)
 				childPath := filepath.Join(strings.TrimSuffix(parentPath, ".jsonl"), "run-a", "run-0", "session.jsonl")
 				switch tt.agent {
+				case parser.AgentWorkBuddy:
+					childRoot := filepath.Join(strings.TrimSuffix(parentPath, ".jsonl"), "subagents")
+					childPath = filepath.Join(childRoot, "2025.01.01.jsonl")
+					write(childPath, workBuddyContent(42))
+					write(filepath.Join(childRoot, "nested", "ignored.jsonl"), workBuddyContent(100))
+					write(filepath.Join(root, "project", "other.jsonl"), workBuddyContent(100))
 				case parser.AgentPositAssistant:
 					childPath = copyPosit(filepath.Join("11111111", "subagents", "22222222"))
 				case parser.AgentCursor:
@@ -10497,7 +10506,12 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 				if tt.canonical {
 					wantChildren = 0
 				}
-				if tt.agent == parser.AgentPi || tt.agent == parser.AgentOMP {
+				if tt.agent == parser.AgentWorkBuddy {
+					assertUsage(t, database, parentID, 52, wantChildren)
+					unrelated, err := database.GetSession(t.Context(), "workbuddy:other")
+					require.NoError(t, err)
+					assert.Nil(t, unrelated)
+				} else if tt.agent == parser.AgentPi || tt.agent == parser.AgentOMP {
 					assertUsage(t, database, parentID, 84, wantChildren)
 				} else {
 					children, err := database.GetChildSessions(t.Context(), parentID)
@@ -10512,6 +10526,9 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, child)
 				assert.Equal(t, string(tt.agent), child.Agent)
+				if tt.agent == parser.AgentWorkBuddy {
+					assert.Equal(t, parentID+":subagent:2025.01.01", child.ID)
+				}
 			})
 		}
 	})

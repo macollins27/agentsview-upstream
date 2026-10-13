@@ -983,65 +983,69 @@ func TestDirectBackend_Sync_VSCopilotIDRefreshesOnlyRequestedConversation(t *tes
 }
 
 func TestDirectBackend_Sync_VibeFallbackIDReturnsPromotedSession(t *testing.T) {
-	vibeDir := t.TempDir()
-	d := dbtest.OpenTestDB(t)
-	engine := sync.NewEngine(t.Context(), d, sync.EngineConfig{
-		AgentDirs: map[parser.AgentType][]string{
-			parser.AgentVibe: {vibeDir},
-		},
-		Machine: "local",
-	})
-	t.Cleanup(engine.Close)
-	svc := service.NewDirectBackend(d, engine)
+	for _, usageRefresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("usageRefresh=%t", usageRefresh), func(t *testing.T) {
+			vibeDir := t.TempDir()
+			d := dbtest.OpenTestDB(t)
+			engine := sync.NewEngine(t.Context(), d, sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{
+					parser.AgentVibe: {vibeDir},
+				},
+				Machine: "local",
+			})
+			t.Cleanup(engine.Close)
+			svc := service.NewDirectBackend(d, engine)
 
-	dirName := "session_20260616_083518_abc123"
-	sessionDir := filepath.Join(vibeDir, dirName)
-	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
-	messagesPath := filepath.Join(sessionDir, "messages.jsonl")
-	require.NoError(t, os.WriteFile(
-		messagesPath,
-		[]byte(`{"role":"user","content":"hello vibe"}`+"\n"),
-		0o644,
-	))
+			dirName := "session_20260616_083518_abc123"
+			sessionDir := filepath.Join(vibeDir, dirName)
+			require.NoError(t, os.MkdirAll(sessionDir, 0o755))
+			messagesPath := filepath.Join(sessionDir, "messages.jsonl")
+			require.NoError(t, os.WriteFile(
+				messagesPath,
+				[]byte(`{"role":"user","content":"hello vibe"}`+"\n"),
+				0o644,
+			))
 
-	engine.SyncPaths([]string{messagesPath})
-	fallbackID := "vibe:" + dirName
-	fallback, err := d.GetSession(t.Context(), fallbackID)
-	require.NoError(t, err)
-	require.NotNil(t, fallback)
+			engine.SyncPaths([]string{messagesPath})
+			fallbackID := "vibe:" + dirName
+			fallback, err := d.GetSession(t.Context(), fallbackID)
+			require.NoError(t, err)
+			require.NotNil(t, fallback)
 
-	sessionID := "abc123def-0000-0000-0000-000000000000"
-	metaPath := filepath.Join(sessionDir, "meta.json")
-	require.NoError(t, os.WriteFile(
-		metaPath,
-		[]byte(`{"session_id":"`+sessionID+`","title":"Promoted"}`+"\n"),
-		0o644,
-	))
-	future := time.Now().Add(time.Hour)
-	require.NoError(t, os.Chtimes(metaPath, future, future))
+			sessionID := "abc123def-0000-0000-0000-000000000000"
+			metaPath := filepath.Join(sessionDir, "meta.json")
+			require.NoError(t, os.WriteFile(
+				metaPath,
+				[]byte(`{"session_id":"`+sessionID+`","title":"Promoted"}`+"\n"),
+				0o644,
+			))
+			future := time.Now().Add(time.Hour)
+			require.NoError(t, os.Chtimes(metaPath, future, future))
 
-	detail, err := svc.Sync(t.Context(), service.SyncInput{
-		ID: fallbackID,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, detail)
-	assert.Equal(t, "vibe:"+sessionID, detail.ID)
-	require.NotNil(t, detail.DisplayName)
-	assert.Equal(t, "Promoted", *detail.DisplayName)
+			detail, err := svc.Sync(t.Context(), service.SyncInput{
+				ID: fallbackID, UsageRefresh: usageRefresh, Subagents: usageRefresh,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, detail)
+			assert.Equal(t, "vibe:"+sessionID, detail.ID)
+			require.NotNil(t, detail.DisplayName)
+			assert.Equal(t, "Promoted", *detail.DisplayName)
 
-	stale, err := d.GetSession(t.Context(), fallbackID)
-	require.NoError(t, err)
-	assert.Nil(t, stale)
+			stale, err := d.GetSession(t.Context(), fallbackID)
+			require.NoError(t, err)
+			assert.Nil(t, stale)
 
-	require.NoError(t, os.Remove(metaPath))
-	require.NoError(t, os.Chtimes(messagesPath, future, future))
-	detail, err = svc.Sync(t.Context(), service.SyncInput{ID: "vibe:" + sessionID})
-	require.NoError(t, err)
-	require.NotNil(t, detail)
-	assert.Equal(t, fallbackID, detail.ID)
-	stale, err = d.GetSession(t.Context(), "vibe:"+sessionID)
-	require.NoError(t, err)
-	assert.Nil(t, stale)
+			require.NoError(t, os.Remove(metaPath))
+			require.NoError(t, os.Chtimes(messagesPath, future, future))
+			detail, err = svc.Sync(t.Context(), service.SyncInput{ID: "vibe:" + sessionID, UsageRefresh: usageRefresh, Subagents: usageRefresh})
+			require.NoError(t, err)
+			require.NotNil(t, detail)
+			assert.Equal(t, fallbackID, detail.ID)
+			stale, err = d.GetSession(t.Context(), "vibe:"+sessionID)
+			require.NoError(t, err)
+			assert.Nil(t, stale)
+		})
+	}
 }
 
 func TestDirectBackend_Sync_MissingNonVibeIDDoesNotReturnSamePathSession(t *testing.T) {
