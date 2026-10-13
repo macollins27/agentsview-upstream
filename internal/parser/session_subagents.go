@@ -18,8 +18,8 @@ func SubagentTranscriptRoot(agent AgentType, sessionPath string) string {
 	case AgentPositAssistant:
 		return filepath.Join(filepath.Dir(sessionPath), positAssistantSubagentsDir)
 	case AgentPi, AgentOMP, AgentOMO, AgentStepCode:
-		if strings.HasSuffix(sessionPath, ".jsonl") {
-			return strings.TrimSuffix(sessionPath, ".jsonl")
+		if root, ok := strings.CutSuffix(sessionPath, ".jsonl"); ok {
+			return root
 		}
 		return ""
 	case AgentCursor:
