@@ -10574,12 +10574,10 @@ func TestSubagentRefreshMarksContentionAfterParentAsIncomplete(t *testing.T) {
 					<-locked
 				})
 
-				start := time.Now()
 				err := fx.engine.SyncSessionWithSubagentsContext(t.Context(), parentID)
 				require.ErrorIs(t, err, ErrSyncInProgress)
 				require.ErrorIs(t, err, ErrSubagentRefreshIncomplete)
 				assert.Contains(t, err.Error(), "usage aggregate may be incomplete")
-				assert.Equal(t, 250*time.Millisecond, time.Since(start))
 				releaseLock()
 				require.NoError(t, <-lockDone)
 			})

@@ -2436,3 +2436,63 @@ func TestLooksLikePath(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionUsageVibeReplacementID(t *testing.T) {
+	t.Run("remote", func(t *testing.T) {
+		const requested = "vibe:old-session"
+		const replacement = "vibe:replacement-session"
+		var paths []string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			switch r.URL.Path {
+			case "/api/v1/sessions/" + requested:
+				writeJSONResponse(w, `{"id":"`+requested+`","agent":"vibe"}`)
+			case "/api/v1/sessions/sync":
+				writeJSONResponse(w, `{"id":"`+replacement+`"}`)
+			case "/api/v1/sessions/" + replacement + "/usage":
+				assert.Equal(t, "breakdown=true&subagents=true", r.URL.RawQuery)
+				writeJSONResponse(w, `{"session_id":"`+replacement+`","agent":"vibe","has_token_data":false}`)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(ts.Close)
+		backend := daemonArchiveQueryBackend{tr: transport{URL: ts.URL, Runtime: daemonRuntimeFromTestURL(t, ts.URL)}}
+		stderr := captureStderr(t, func() {
+			out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested})
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, replacement, out.SessionID)
+			assert.Equal(t, tokenUseExitNoTokenData, code)
+		})
+		assert.Empty(t, stderr)
+		assert.Equal(t, []string{"/api/v1/sessions/" + requested, "/api/v1/sessions/sync", "/api/v1/sessions/" + replacement + "/usage"}, paths)
+	})
+	t.Run("local", func(t *testing.T) {
+		root := t.TempDir()
+		cfg := config.Config{DBPath: filepath.Join(t.TempDir(), "sessions.db"), AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, InstallationID: "local"}
+		database := dbtest.OpenTestDBAt(t, cfg.DBPath)
+		engine := agentsync.NewEngine(t.Context(), database, agentsync.EngineConfig{AgentDirs: cfg.AgentDirs, Machine: cfg.InstallationID, DeferStartupMaintenance: true})
+		t.Cleanup(engine.Close)
+		const dirName = "session_20260616_083518_abc123"
+		const canonical = "vibe:11111111-1111-4111-8111-111111111111"
+		dir := filepath.Join(root, dirName)
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		messages := filepath.Join(dir, "messages.jsonl")
+		require.NoError(t, os.WriteFile(messages, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o600))
+		meta := filepath.Join(dir, "meta.json")
+		require.NoError(t, os.WriteFile(meta, []byte(`{"session_id":"11111111-1111-4111-8111-111111111111"}`), 0o600))
+		require.NoError(t, engine.SyncPathsContext(t.Context(), []string{messages}))
+		requested, expected := canonical, "vibe:"+dirName
+		require.NoError(t, os.Remove(meta))
+		backend := localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
+		stderr := captureStderr(t, func() {
+			out, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: requested})
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, expected, out.SessionID)
+			assert.Equal(t, tokenUseExitNoTokenData, code)
+		})
+		assert.Empty(t, stderr)
+	})
+}

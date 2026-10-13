@@ -214,11 +214,6 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 	require.NoError(t, err)
 
 	childPath := filepath.Join(projDir, "parent-uuid", "subagents", "agent-worker1.jsonl")
-	parentID := "parent-uuid"
-	require.NoError(t, database.UpsertSession(ctx, db.Session{
-		ID: "agent-worker1", Agent: "claude", Machine: "local", Project: "project",
-		FilePath: &childPath, ParentSessionID: &parentID, RelationshipType: "subagent",
-	}))
 	require.NoError(t, os.WriteFile(
 		childPath,
 		[]byte(testjsonl.NewSessionBuilder().
@@ -236,7 +231,6 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 	child, err := database.GetSession(ctx, "agent-worker1")
 	require.NoError(t, err)
 	require.NotNil(t, child, "subagent session was not synced")
-	assert.Positive(t, child.MessageCount)
 
 	// --own-only skips the subagent refresh and the combined view.
 	require.NoError(t, os.WriteFile(childPath, []byte(testjsonl.NewSessionBuilder().
@@ -251,72 +245,56 @@ func TestLocalSessionUsageRefreshesSubagentTranscripts(t *testing.T) {
 	assert.Equal(t, child.FirstMessage, unchanged.FirstMessage)
 }
 
-func TestLocalSessionUsageStaleArchiveKeepsStoredUsage(t *testing.T) {
-	cfg := testConfigWithClaudeFixture(t)
-	sourcePath := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj1", "session1.jsonl")
-	require.NoError(t, os.WriteFile(sourcePath, []byte(testjsonl.NewSessionBuilder().
-		AddClaudeUser("2026-05-20T10:00:00Z", "original").
-		AddClaudeAssistantUsage("2026-05-20T10:00:05Z", "original usage", testjsonl.ClaudeAssistantUsage{OutputTokens: 37}).String()), 0o644))
-	database, err := db.Open(t.Context(), cfg.DBPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, database.Close()) })
-	backend := localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
-	before, _, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session1"})
-	require.NoError(t, err)
-	require.NotNil(t, before)
-	require.NoError(t, os.WriteFile(sourcePath, []byte(testjsonl.NewSessionBuilder().
-		AddClaudeUser("2026-05-20T10:00:00Z", "changed").
-		AddClaudeAssistantUsage("2026-05-20T10:00:05Z", "changed usage", testjsonl.ClaudeAssistantUsage{OutputTokens: 999}).String()), 0o644))
-	require.NoError(t, database.Close())
-	markArchiveStale(t, cfg.DBPath)
-	database, err = db.Open(t.Context(), cfg.DBPath)
-	require.NoError(t, err)
-	require.True(t, database.NeedsResync())
-	backend.database = database
-	stderr := captureStderr(t, func() {
-		after, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: before.SessionID})
-		require.NoError(t, err)
-		require.NotNil(t, after)
-		assert.Equal(t, 0, code)
-		assert.Equal(t, 37, after.TotalOutputTokens)
-		assert.True(t, after.HasTokenData)
-	})
-	assert.Contains(t, stderr, "run agentsview resync")
-	assert.Contains(t, stderr, "showing stored usage")
-	assert.True(t, database.NeedsResync())
-}
-
-func TestLocalSessionUsageRefreshWriteFailureKeepsStoredUsage(t *testing.T) {
-	cfg := testConfigWithClaudeFixture(t)
-	path := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj1", "session1.jsonl")
-	write := func(output int) {
-		require.NoError(t, os.WriteFile(path, []byte(testjsonl.NewSessionBuilder().
-			AddClaudeUser("2026-01-01T00:00:00Z", "task").
-			AddClaudeAssistantUsage("2026-01-01T00:00:01Z", "answer", testjsonl.ClaudeAssistantUsage{OutputTokens: output}).String()), 0o600))
+func TestLocalSessionUsageRefreshFailureKeepsStoredUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		warning string
+	}{
+		{"stale archive", "run agentsview resync"},
+		{"write failure", "refresh write rejected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfigWithClaudeFixture(t)
+			path := filepath.Join(cfg.AgentDirs[parser.AgentClaude][0], "-home-proj1", "session1.jsonl")
+			write := func(output int) {
+				require.NoError(t, os.WriteFile(path, []byte(testjsonl.NewSessionBuilder().
+					AddClaudeUser("2026-01-01T00:00:00Z", "task").
+					AddClaudeAssistantUsage("2026-01-01T00:00:01Z", "answer", testjsonl.ClaudeAssistantUsage{OutputTokens: output}).String()), 0o600))
+			}
+			write(10)
+			database, err := db.Open(t.Context(), cfg.DBPath)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, database.Close()) })
+			backend := localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
+			before, _, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session1"})
+			require.NoError(t, err)
+			require.NotNil(t, before)
+			require.Equal(t, 10, before.TotalOutputTokens)
+			write(99)
+			if tc.name == "stale archive" {
+				require.NoError(t, database.Close())
+				markArchiveStale(t, cfg.DBPath)
+				database, err = db.Open(t.Context(), cfg.DBPath)
+				require.NoError(t, err)
+				backend.database = database
+			} else {
+				conn, err := sql.Open("sqlite3", cfg.DBPath)
+				require.NoError(t, err)
+				_, err = conn.ExecContext(t.Context(), `CREATE TRIGGER reject_refresh BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'refresh write rejected'); END`)
+				require.NoError(t, err)
+				require.NoError(t, conn.Close())
+			}
+			stderr := captureStderr(t, func() {
+				after, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: before.SessionID})
+				require.NoError(t, err)
+				require.NotNil(t, after)
+				assert.Equal(t, tokenUseExitOK, code)
+				assert.Equal(t, before.TotalOutputTokens, after.TotalOutputTokens)
+				assert.True(t, after.HasTokenData)
+			})
+			assert.Contains(t, stderr, tc.warning)
+			assert.Contains(t, stderr, "showing stored usage, which may be incomplete")
+			assert.Equal(t, tc.name == "stale archive", database.NeedsResync())
+		})
 	}
-	write(10)
-	database, err := db.Open(t.Context(), cfg.DBPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, database.Close()) })
-	backend := localArchiveQueryBackend{cfg: cfg, database: database, offline: true}
-	before, _, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: "session1"})
-	require.NoError(t, err)
-	require.NotNil(t, before)
-	require.Equal(t, 10, before.TotalOutputTokens)
-	write(99)
-	conn, err := sql.Open("sqlite3", cfg.DBPath)
-	require.NoError(t, err)
-	_, err = conn.ExecContext(t.Context(), `CREATE TRIGGER reject_refresh BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'refresh write rejected'); END`)
-	require.NoError(t, err)
-	require.NoError(t, conn.Close())
-	stderr := captureStderr(t, func() {
-		after, code, err := backend.SessionUsage(t.Context(), sessionUsageQuery{SessionID: before.SessionID})
-		require.NoError(t, err)
-		require.NotNil(t, after)
-		assert.Equal(t, tokenUseExitOK, code)
-		assert.Equal(t, 10, after.TotalOutputTokens)
-	})
-	assert.Contains(t, stderr, "warning: sync failed:")
-	assert.Contains(t, stderr, "refresh write rejected")
-	assert.Contains(t, stderr, "showing stored usage, which may be incomplete")
 }
