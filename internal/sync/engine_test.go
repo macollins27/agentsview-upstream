@@ -10164,8 +10164,8 @@ func TestTargetedRefreshLockWait(t *testing.T) {
 					err := entry.run(ctx, engine)
 					switch outcome {
 					case "release":
-						assert.NotErrorIs(t, err, ErrSyncInProgress)
-						assert.NotErrorIs(t, err, context.Canceled)
+						require.NotErrorIs(t, err, ErrSyncInProgress)
+						require.NotErrorIs(t, err, context.Canceled)
 						assert.GreaterOrEqual(t, time.Since(start), 20*time.Millisecond)
 						assert.Less(t, time.Since(start), 250*time.Millisecond)
 					case "busy":
